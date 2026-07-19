@@ -1,35 +1,51 @@
 /* ============================================================
-   ThreadThink — Settings & Clear Conversation
+   ThreadThink — Settings Module (v2: backend-managed)
    ============================================================ */
 
 import { getDom } from './dom.js';
-import { getApiKey, getApiBase, getModel, getSystemPrompt, setApiKey, setApiBase, setModel, setSystemPrompt, getMessages, getCards, clearAllMessages, clearAllCards, persistSettings } from './state.js';
+import { fetchSettings, updateSettings as apiUpdateSettings } from './api.js';
+import { getToken } from './auth.js';
 import { showToast } from './utils.js';
-import { renderConversation } from './renderer.js';
-import { syncSidebarHeights } from './sidebar.js';
 
-export function openSettings() {
+/** Load settings from server and populate modal */
+export async function openSettings() {
   var dom = getDom();
-  dom.apiKeyInput.value = getApiKey();
-  dom.apiBaseInput.value = getApiBase();
-  dom.modelInput.value = getModel();
-  dom.systemPromptInput.value = getSystemPrompt();
-  dom.modalOverlay.classList.add('visible');
+  if (!getToken()) return;
+
+  try {
+    var settings = await fetchSettings();
+    dom.apiKeyInput.value = '';  // Don't show API key
+    dom.apiBaseInput.value = settings.apiBase || 'https://api.deepseek.com/v1/chat/completions';
+    dom.modelInput.value = settings.model || 'deepseek-chat';
+    dom.systemPromptInput.value = settings.systemPrompt || '';
+    dom.modalOverlay.classList.add('visible');
+  } catch (e) {
+    showToast('获取设置失败: ' + e.message, true);
+  }
 }
 
 export function closeSettings() {
   getDom().modalOverlay.classList.remove('visible');
 }
 
-export function saveSettings() {
+/** Save settings to server */
+export async function saveSettings() {
   var dom = getDom();
-  setApiKey(dom.apiKeyInput.value.trim());
-  setApiBase(dom.apiBaseInput.value.trim());
-  setModel(dom.modelInput.value.trim() || 'deepseek-chat');
-  setSystemPrompt(dom.systemPromptInput.value.trim());
-  persistSettings();
-  closeSettings();
-  showToast('已保存 ✓');
+  var data = {
+    apiBase: dom.apiBaseInput.value.trim(),
+    model: dom.modelInput.value.trim() || 'deepseek-chat',
+    systemPrompt: dom.systemPromptInput.value.trim(),
+  };
+  var apiKey = dom.apiKeyInput.value.trim();
+  if (apiKey) data.apiKey = apiKey;
+
+  try {
+    await apiUpdateSettings(data);
+    closeSettings();
+    showToast('已保存 ✓');
+  } catch (e) {
+    showToast('保存失败: ' + e.message, true);
+  }
 }
 
 export function resetSettings() {
@@ -38,24 +54,6 @@ export function resetSettings() {
   dom.apiBaseInput.value = 'https://api.deepseek.com/v1/chat/completions';
   dom.modelInput.value = 'deepseek-chat';
   dom.systemPromptInput.value = '你是一个有帮助的AI助手，请用中文回答用户的问题。';
-}
-
-export function clearConversation() {
-  if (!confirm('清空所有对话和批注？')) return;
-  var cards = getCards();
-  for (var k in cards) { if (cards[k].el) cards[k].el.remove(); }
-  clearAllMessages();
-  clearAllCards();
-  var dom = getDom();
-  dom.sidebarLeftInner.innerHTML = '';
-  dom.sidebarRightInner.innerHTML = '';
-  var hintL = dom.sidebarLeft.querySelector('.sidebar-hint');
-  var hintR = dom.sidebarRight.querySelector('.sidebar-hint');
-  if (hintL) hintL.style.display = '';
-  if (hintR) hintR.style.display = '';
-  syncSidebarHeights();
-  renderConversation();
-  showToast('已清空');
 }
 
 export function autoResize() {

@@ -1,5 +1,5 @@
 /* ============================================================
-   ThreadThink — Utilities
+   ThreadThink — Utils (v2)
    ============================================================ */
 
 var _nextId = 1;
@@ -18,7 +18,6 @@ export function escapeHTML(s) {
 
 var _userScrolledAway = false;
 
-/** Track whether user has scrolled away from the bottom */
 export function trackUserScroll(workspace) {
   var atBottom = workspace.scrollTop + workspace.clientHeight >= workspace.scrollHeight - 20;
   if (!atBottom) _userScrolledAway = true;
@@ -33,7 +32,6 @@ export function scrollToBottom(workspace) {
   _userScrolledAway = false;
 }
 
-/** Only scroll to bottom if user hasn't scrolled away manually */
 export function autoScrollIfAllowed(workspace) {
   if (!_userScrolledAway) scrollToBottom(workspace);
 }
@@ -46,4 +44,21 @@ export function showToast(m, e) {
   t.textContent = m;
   container.appendChild(t);
   setTimeout(function () { t.remove(); }, 3000);
+}
+
+/** Format a date string for display */
+export function formatDate(dateStr) {
+  if (!dateStr) return '';
+  var d = new Date(dateStr + 'Z');
+  var now = new Date();
+  var diff = now - d;
+  if (diff < 60000) return '刚刚';
+  if (diff < 3600000) return Math.floor(diff / 60000) + '分钟前';
+  if (diff < 86400000) return Math.floor(diff / 3600000) + '小时前';
+  return d.toLocaleDateString('zh-CN');
+}
+
+/** Extract a title from first user message */
+export function extractTitle(content) {
+  return content.slice(0, 40) + (content.length > 40 ? '...' : '');
 }

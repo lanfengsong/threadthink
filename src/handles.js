@@ -1,18 +1,107 @@
 /* ============================================================
-   ThreadThink — Main Action Handlers (Send + Annotate)
+   ThreadThink — Handles (v2: backend chat + tool calls)
    ============================================================ */
 
 import { getDom } from './dom.js';
-import { getMessages, addMessage, setStreaming, isStreaming } from './state.js';
-import { getApiKey, getApiBase, getModel, getSystemPrompt } from './state.js';
+import { getMessages, addMessage, setStreaming, isStreaming, getCurrentConversationId, setMessages } from './state.js';
 import { getColor } from './palette.js';
 import { genId, showToast, scrollToBottom, autoScrollIfAllowed } from './utils.js';
 import { renderMarkdown } from './markdown.js';
-import { renderMessage, refreshMessage } from './renderer.js';
+import { renderMessage, refreshMessage, renderConversation } from './renderer.js';
 import { syncSidebarHeights, rebuildSidebar } from './sidebar.js';
 import { createFloatingCard } from './cards.js';
-import { callAI } from './api.js';
-import { buildAnnotationContext } from './annotations.js';
+import { createChatStream, createConversation, fetchMessages } from './api.js';
+import { buildAnnotationContext, findAnnotationById } from './annotations.js';
+
+// ---- Chat Send (backend version) ----
+
+export async function handleSend() {
+  var dom = getDom();
+  var text = dom.userInput.value.trim();
+  if (!text || isStreaming()) return;
+
+  var convId = getCurrentConversationId();
+
+  // Auto-create conversation if none selected
+  if (!convId) {
+    try {
+      var conv = await createConversation(text.slice(0, 40));
+      convId = conv.id;
+      var { setCurrentConversation, addConversation } = await import('./state.js');
+      setCurrentConversation(convId);
+      addConversation(conv);
+      await refreshConversationList();
+    } catch (e) { showToast(e.message, true); return; }
+  }
+
+  dom.userInput.value = ''; dom.userInput.style.height = 'auto';
+  dom.btnSend.disabled = true; setStreaming(true);
+
+  var messages = getMessages();
+  var uMsg = { id: genId(), role: 'user', content: text, annotations: [] };
+  var aMsg = { id: genId(), role: 'assistant', content: '', annotations: [], _loading: true };
+  addMessage(uMsg);
+  addMessage(aMsg);
+
+  dom.conversation.appendChild(renderMessage(uMsg));
+  dom.conversation.appendChild(renderMessage(aMsg));
+  dom.welcome.style.display = 'none';
+  syncSidebarHeights();
+  rebuildSidebar('left'); rebuildSidebar('right');
+  scrollToBottom(dom.workspace);
+
+  var bodyEl = dom.conversation.querySelector('[data-msg-id="' + aMsg.id + '"] .message-body');
+
+  createChatStream(convId, text, {
+    onToken: function (token) {
+      aMsg.content += token;
+      if (bodyEl) bodyEl.innerHTML = renderMarkdown(aMsg.content);
+      syncSidebarHeights();
+      autoScrollIfAllowed(dom.workspace);
+    },
+    onToolStart: function (ts) {
+      // Insert tool call indicator into message
+      if (bodyEl) {
+        var toolDiv = document.createElement('div');
+        toolDiv.className = 'tool-call';
+        toolDiv.dataset.toolName = ts.tool_name;
+        toolDiv.innerHTML = '<div class="tool-call-header">🔧 正在调用: <strong>' + ts.tool_name + '</strong>…</div>';
+        bodyEl.appendChild(toolDiv);
+      }
+    },
+    onToolEnd: function (te) {
+      // Update tool call with result
+      if (bodyEl) {
+        var toolEl = bodyEl.querySelector('.tool-call[data-tool-name="' + te.tool_name + '"]:last-child');
+        if (toolEl) {
+          var resultPreview = typeof te.result === 'string' ? te.result.slice(0, 200) : JSON.stringify(te.result).slice(0, 200);
+          toolEl.innerHTML =
+            '<details class="tool-call-details">' +
+              '<summary>🔧 ' + te.tool_name + ' ✓</summary>' +
+              '<pre>' + escapeHTML(resultPreview) + '</pre>' +
+            '</details>';
+        }
+      }
+    },
+    onDone: function () {
+      aMsg._loading = false;
+      refreshMessage(aMsg.id);
+      autoScrollIfAllowed(dom.workspace);
+      setStreaming(false);
+      dom.btnSend.disabled = false;
+      dom.userInput.focus();
+    },
+    onError: function (err) {
+      aMsg._loading = false; aMsg.content += '\n\n❌ ' + err.message;
+      refreshMessage(aMsg.id);
+      showToast(err.message, true);
+      setStreaming(false);
+      dom.btnSend.disabled = false;
+    },
+  });
+}
+
+// ---- Annotation (unchanged core logic, adapted for new api module) ----
 
 export function handleAnnotateClick() {
   var dom = getDom();
@@ -32,7 +121,6 @@ export function handleAnnotateClick() {
 
   if (!msg.annotations) msg.annotations = [];
 
-  // Store surrounding raw context for reliable re-render position matching
   var rawContent = msg.content;
   var firstIdx = rawContent.indexOf(st);
   var ctxStart = Math.max(0, firstIdx - 25);
@@ -52,69 +140,96 @@ export function handleAnnotateClick() {
   mark.parentNode.insertBefore(badge, mark.nextSibling);
   sel.removeAllRanges();
 
-  // Create floating card
   var card = createFloatingCard(ann, color);
 
-  // Call AI for annotation answer
   var ctx = buildAnnotationContext(msgId);
   ctx.push({ role: 'user', content: '在你之前的回答中提到了这段话：\n\n"' + st + '"\n\n追问：' + q + '\n\n请用一句话简洁回答，不要展开。' });
 
-  var config = { apiKey: getApiKey(), apiBase: getApiBase(), model: getModel(), systemPrompt: getSystemPrompt() };
+  // For annotations, still use direct AI call since it's a quick Q&A
+  // Use the server chat but with a temporary conversation
+  var convId = getCurrentConversationId();
+  if (!convId) { showToast('请先开始对话', true); return; }
+
   var answerEl = card.querySelector('[data-ann-content="' + ann.id + '"]');
 
-  callAI(ctx, config, function (ft) {
-    ann.answer = ft;
-    if (answerEl) answerEl.textContent = ft;
-    var pinEl = document.querySelector('.pinned-card [data-ann-content="' + ann.id + '"]');
-    if (pinEl) pinEl.textContent = ft;
-  }).then(function (ft) {
-    ann.answer = ft; ann._loading = false;
-    if (answerEl) answerEl.innerHTML = renderMarkdown(ft);
-    var pinEl = document.querySelector('.pinned-card [data-ann-content="' + ann.id + '"]');
-    if (pinEl) pinEl.innerHTML = renderMarkdown(ft);
-    syncSidebarHeights(); rebuildSidebar('left'); rebuildSidebar('right');
-  }).catch(function (err) {
-    ann._loading = false; ann.answer = '❌ ' + err.message;
-    if (answerEl) answerEl.textContent = ann.answer;
-    var pinEl = document.querySelector('.pinned-card [data-ann-content="' + ann.id + '"]');
-    if (pinEl) pinEl.textContent = ann.answer;
-    showToast(err.message, true);
+  createChatStream(convId, '在你之前的回答中提到了这段话：\n\n"' + st + '"\n\n追问：' + q + '\n\n请用一句话简洁回答，不要展开。', {
+    onToken: function (ft) {
+      ann.answer = ft;
+      if (answerEl) answerEl.textContent = ft;
+      var pinEl = document.querySelector('.pinned-card [data-ann-content="' + ann.id + '"]');
+      if (pinEl) pinEl.textContent = ft;
+    },
+    onToolStart: function () {},
+    onToolEnd: function () {},
+    onDone: function () {
+      ann._loading = false;
+      if (answerEl) answerEl.innerHTML = renderMarkdown(ann.answer);
+      var pinEl = document.querySelector('.pinned-card [data-ann-content="' + ann.id + '"]');
+      if (pinEl) pinEl.innerHTML = renderMarkdown(ann.answer);
+      syncSidebarHeights(); rebuildSidebar('left'); rebuildSidebar('right');
+    },
+    onError: function (err) {
+      ann._loading = false; ann.answer = '❌ ' + err.message;
+      if (answerEl) answerEl.textContent = ann.answer;
+    },
   });
 }
 
-export function handleSend() {
-  var dom = getDom();
-  var text = dom.userInput.value.trim();
-  if (!text || isStreaming()) return;
-  dom.userInput.value = ''; dom.userInput.style.height = 'auto';
-  dom.btnSend.disabled = true; setStreaming(true);
-
-  var uMsg = { id: genId(), role: 'user', content: text, annotations: [] };
-  var aMsg = { id: genId(), role: 'assistant', content: '', annotations: [], _loading: true };
-  addMessage(uMsg);
-  addMessage(aMsg);
-
-  // APPEND only — never destroy existing DOM (preserves annotation highlights)
-  dom.conversation.appendChild(renderMessage(uMsg));
-  dom.conversation.appendChild(renderMessage(aMsg));
-  dom.welcome.style.display = 'none';
-  syncSidebarHeights();
-  rebuildSidebar('left'); rebuildSidebar('right');
-  scrollToBottom(dom.workspace);
-
-  var bodyEl = dom.conversation.querySelector('[data-msg-id="' + aMsg.id + '"] .message-body');
-  var messages = getMessages();
-  var apiMsgs = [];
-  for (var i = 0; i < messages.length; i++) { if (messages[i] === aMsg) break; apiMsgs.push({ role: messages[i].role, content: messages[i].content }); }
-
-  var config = { apiKey: getApiKey(), apiBase: getApiBase(), model: getModel(), systemPrompt: getSystemPrompt() };
-
-  callAI(apiMsgs, config, function (ft) {
-    aMsg.content = ft;
-    if (bodyEl) bodyEl.innerHTML = renderMarkdown(ft);
-    syncSidebarHeights();
-    autoScrollIfAllowed(dom.workspace);
-  })
-    .then(function (ft) { aMsg._loading = false; aMsg.content = ft; refreshMessage(aMsg.id); autoScrollIfAllowed(dom.workspace); setStreaming(false); dom.btnSend.disabled = false; dom.userInput.focus(); })
-    .catch(function (err) { aMsg._loading = false; aMsg.content = '❌ ' + err.message; refreshMessage(aMsg.id); showToast(err.message, true); setStreaming(false); dom.btnSend.disabled = false; });
+export function escapeHTML(s) {
+  var d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
 }
+
+// ---- Conversation switching ----
+
+export async function switchConversation(convId) {
+  var { setCurrentConversation, clearMessages, setMessages } = await import('./state.js');
+  setCurrentConversation(convId);
+  clearMessages();
+
+  try {
+    var msgs = await fetchMessages(convId);
+    var mapped = msgs.map(function (m) {
+      return { id: m.id, role: m.role, content: m.content, annotations: JSON.parse(m.annotations || '[]'), _loading: false };
+    });
+    setMessages(mapped);
+    renderConversation();
+  } catch (e) {
+    showToast('加载对话失败: ' + e.message, true);
+  }
+}
+
+export async function refreshConversationList() {
+  try {
+    var { fetchConversations } = await import('./api.js');
+    var { setConversations } = await import('./state.js');
+    var convs = await fetchConversations();
+    setConversations(convs);
+    renderConversationList();
+  } catch (e) { /* silent */ }
+}
+
+function renderConversationList() {
+  var listEl = document.getElementById('conversationList');
+  if (!listEl) return;
+  var { getConversations, getCurrentConversationId } = require('./state.js'); // eslint-disable-line
+  // Use dynamic import to avoid circular issues
+  import('./state.js').then(function (st) {
+    var convs = st.getConversations();
+    var curId = st.getCurrentConversationId();
+    var html = '';
+    for (var i = 0; i < convs.length; i++) {
+      var c = convs[i];
+      var active = c.id === curId ? ' active' : '';
+      html += '<div class="conv-item' + active + '" data-conv-id="' + c.id + '">' +
+        '<span class="conv-title">' + escapeHTML(c.title || '新对话') + '</span>' +
+        '<button class="conv-delete" data-conv-id="' + c.id + '">×</button>' +
+        '</div>';
+    }
+    listEl.innerHTML = html;
+  });
+}
+
+// Make renderConversationList globally accessible
+window.refreshConvList = refreshConversationList;

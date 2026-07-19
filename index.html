@@ -8,20 +8,34 @@
 </head>
 <body>
 
+<!-- Auth overlay (dynamically rendered) -->
+
 <div class="app">
 
   <header class="header">
     <div class="header-left">
+      <button class="btn-icon" id="btnToggleSidebar" title="对话列表">☰</button>
       <h1 class="logo">ThreadThink</h1>
       <span class="tagline">批注式 AI 对话</span>
     </div>
     <div class="header-right">
+      <span class="user-email" id="userEmail"></span>
       <button class="btn-icon" id="btnSettings" title="设置">⚙️</button>
       <button class="btn-icon" id="btnClear" title="清空">🗑️</button>
+      <button class="btn-icon" id="btnLogout" title="退出">🚪</button>
     </div>
   </header>
 
   <div class="workspace" id="workspace">
+
+    <!-- Conversation list sidebar -->
+    <aside class="conv-sidebar" id="convSidebar">
+      <div class="conv-sidebar-header">
+        <span>对话</span>
+        <button class="btn-new-conv" id="btnNewConv" title="新建对话">+</button>
+      </div>
+      <div class="conv-list" id="conversationList"></div>
+    </aside>
 
     <aside class="sidebar" id="sidebarLeft">
       <div class="sidebar-hint" id="sidebarLeftHint">拖入卡片固定</div>
