@@ -3,14 +3,13 @@
    ============================================================ */
 
 import { getDom } from './dom.js';
-import { getMessages, clearAllMessages, clearAllCards, resetNextId, persistSettings } from './state.js';
-import { trackUserScroll, scrollToBottom } from './utils.js';
+import { getApiKey } from './state.js';
+import { trackUserScroll } from './utils.js';
 import { handleSend, handleAnnotateClick } from './handles.js';
 import { handleSelection } from './selection.js';
 import { openSettings, closeSettings, saveSettings, resetSettings, clearConversation, autoResize } from './settings.js';
 import { clickAnnotation } from './cards.js';
 import { renderConversation } from './renderer.js';
-import { getApiKey } from './state.js';
 import { showToast } from './utils.js';
 
 export function init() {

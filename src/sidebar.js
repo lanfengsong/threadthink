@@ -61,13 +61,9 @@ export function createPinnedCardEl(annId) {
       '<div data-ann-content="' + annId + '">' + (ann.answer ? renderMarkdown(ann.answer) : (ann._loading ? '<em>…</em>' : '')) + '</div>' +
     '</div>';
 
-  // Bind unpin button — use setTimeout to ensure DOM is attached before querying
-  setTimeout(function () {
-    var unpinBtn = el.querySelector('.btn-unpin');
-    if (unpinBtn) unpinBtn.onclick = function (e) { e.stopPropagation(); unpinCard(annId); };
-    var titleEl = el.querySelector('.pinned-title');
-    if (titleEl) titleEl.onclick = function (e) { e.stopPropagation(); editAnnQuestion(ann, titleEl, 'pinned'); };
-  }, 0);
+  el.querySelector('.btn-unpin').onclick = function (e) { e.stopPropagation(); unpinCard(annId); };
+  el.querySelector('.pinned-title').onclick = function (e) { e.stopPropagation(); editAnnQuestion(ann, el.querySelector('.pinned-title'), 'pinned'); };
+  return el;
 }
 
 /** Rebuild a sidebar: spacers align pinned cards with annotations */
