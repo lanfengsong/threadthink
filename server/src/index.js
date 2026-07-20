@@ -11,6 +11,8 @@ import { authRoutes } from './routes/auth.routes.js';
 import { chatRoutes } from './routes/chat.routes.js';
 import { conversationsRoutes } from './routes/conversations.routes.js';
 import { settingsRoutes } from './routes/settings.routes.js';
+import { documentsRoutes } from './routes/documents.routes.js';
+import multipart from '@fastify/multipart';
 
 var fastify = Fastify({ logger: true });
 
@@ -19,6 +21,9 @@ await fastify.register(cors, {
   origin: [config.corsOrigin, 'http://localhost:5173', 'http://localhost:4173'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
 });
+
+// Multipart file upload
+await fastify.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 } });
 
 // Auth decorator — adds user to request if token is valid
 fastify.decorateRequest('user', null);
@@ -59,6 +64,7 @@ fastify.register(authRoutes, { requireAuth });
 fastify.register(chatRoutes, { requireAuth });
 fastify.register(conversationsRoutes, { requireAuth });
 fastify.register(settingsRoutes, { requireAuth });
+fastify.register(documentsRoutes, { requireAuth });
 
 // Init DB
 getDb();

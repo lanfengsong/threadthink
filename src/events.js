@@ -13,6 +13,7 @@ import { showToast } from './utils.js';
 import { isLoggedIn, login, register, logout, getUser } from './auth.js';
 import { setAuth } from './state.js';
 import { refreshConversationList as refreshList } from './handles.js';
+import { fetchDocuments, uploadFile, deleteDocument, renderDocumentList } from './documents.js';
 
 export function init() {
   var dom = getDom();
@@ -215,6 +216,73 @@ function showApp(dom) {
   renderConversation();
   dom.userInput.focus();
   requestAnimationFrame(function () { dom.workspace.scrollTop = 0; });
+
+  // ---- Document management ----
+  loadDocuments();
+
+  var btnUploadDoc = document.getElementById('btnUploadDoc');
+  var fileInput = document.getElementById('fileInput');
+  var docListEl = document.getElementById('documentList');
+
+  if (btnUploadDoc && fileInput) {
+    btnUploadDoc.addEventListener('click', function () { fileInput.click(); });
+    fileInput.addEventListener('change', async function () {
+      var files = fileInput.files;
+      if (!files || files.length === 0) return;
+      for (var i = 0; i < files.length; i++) {
+        try {
+          showToast('正在上传: ' + files[i].name + '...');
+          await uploadFile(files[i]);
+          showToast('已上传: ' + files[i].name);
+        } catch (e) {
+          showToast('上传失败: ' + e.message, true);
+        }
+      }
+      fileInput.value = '';
+      loadDocuments();
+    });
+  }
+
+  // Drag and drop on document panel
+  if (docListEl) {
+    docListEl.addEventListener('dragover', function (e) { e.preventDefault(); docListEl.classList.add('doc-dragover'); });
+    docListEl.addEventListener('dragleave', function () { docListEl.classList.remove('doc-dragover'); });
+    docListEl.addEventListener('drop', async function (e) {
+      e.preventDefault();
+      docListEl.classList.remove('doc-dragover');
+      var files = e.dataTransfer.files;
+      for (var i = 0; i < files.length; i++) {
+        try {
+          showToast('正在上传: ' + files[i].name + '...');
+          await uploadFile(files[i]);
+          showToast('已上传: ' + files[i].name);
+        } catch (err) {
+          showToast('上传失败: ' + err.message, true);
+        }
+      }
+      loadDocuments();
+    });
+  }
+
+  // Document delete delegation
+  if (docListEl) {
+    docListEl.addEventListener('click', async function (e) {
+      var delBtn = e.target.closest('.doc-delete');
+      if (delBtn) {
+        e.stopPropagation();
+        var docId = delBtn.dataset.docId;
+        if (confirm('删除这个文档？相关的向量数据也会被删除。')) {
+          try {
+            await deleteDocument(docId);
+            showToast('已删除');
+            loadDocuments();
+          } catch (err) {
+            showToast('删除失败: ' + err.message, true);
+          }
+        }
+      }
+    });
+  }
 }
 
 async function clearConversation() {
@@ -233,4 +301,13 @@ async function clearConversation() {
   if (hintR) hintR.style.display = '';
   renderConversation();
   showToast('已清空');
+}
+
+async function loadDocuments() {
+  try {
+    var docs = await fetchDocuments();
+    renderDocumentList(docs);
+  } catch (e) {
+    // silent — user may not be logged in yet
+  }
 }

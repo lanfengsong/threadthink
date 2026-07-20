@@ -35,6 +35,16 @@
         <button class="btn-new-conv" id="btnNewConv" title="新建对话">+</button>
       </div>
       <div class="conv-list" id="conversationList"></div>
+      <div class="doc-section">
+        <div class="doc-section-header">
+          <span>📁 知识库</span>
+          <button class="btn-upload-doc" id="btnUploadDoc" title="上传文档">+</button>
+        </div>
+        <div class="doc-list" id="documentList">
+          <div class="doc-empty">暂无文档<br><small>拖拽或点击上传</small></div>
+        </div>
+        <input type="file" id="fileInput" accept=".pdf,.txt,.md,.markdown" style="display:none" multiple>
+      </div>
     </aside>
 
     <aside class="sidebar" id="sidebarLeft">

@@ -5,6 +5,7 @@
 import { webSearchTool } from './web-search.js';
 import { fetchUrlTool } from './fetch-url.js';
 import { calculatorTool } from './calculator.js';
+import { docSearchTool } from './doc-search.js';
 
 var _tools = {};
 
@@ -16,6 +17,16 @@ export function registerTool(name, definition, execute) {
 registerTool('web_search', webSearchTool.definition, webSearchTool.execute);
 registerTool('fetch_url', fetchUrlTool.definition, fetchUrlTool.execute);
 registerTool('calculator', calculatorTool.definition, calculatorTool.execute);
+registerTool('doc_search', docSearchTool.definition, function (args) {
+  return docSearchTool.execute(args, _userId);
+});
+
+var _userId = null;
+
+/** Set the current user ID for tool execution context */
+export function setToolUserId(userId) {
+  _userId = userId;
+}
 
 /** Get tool definitions in OpenAI format */
 export function getToolDefinitions() {

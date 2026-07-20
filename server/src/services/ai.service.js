@@ -4,7 +4,7 @@
 
 import { getDb } from '../db/connection.js';
 import { decrypt } from './crypto.service.js';
-import { getToolDefinitions, executeTool } from './tools/index.js';
+import { getToolDefinitions, executeTool, setToolUserId } from './tools/index.js';
 
 var MAX_TOOL_ROUNDS = 5;
 
@@ -22,6 +22,9 @@ export async function streamChat(ctx, onToken, onToolStart, onToolEnd, onDone, o
   var db = getDb();
   var userId = ctx.userId;
   var conversationId = ctx.conversationId;
+
+  // Set userId for doc_search tool context
+  setToolUserId(userId);
 
   try {
     // 1. Get user config (decrypted API key)
