@@ -2,11 +2,11 @@
    ThreadThink Server — Document Processing Service
    ============================================================ */
 
-import { readFileSync, unlinkSync } from 'fs';
+import { readFileSync, statSync } from 'fs';
 import { v4 as uuid } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { decrypt } from './crypto.service.js';
-import { getEmbeddings } from './embedding.service.js';
+import { getEmbeddings, getEmbedding, cosineSimilarity } from './embedding.service.js';
 
 var MAX_CHUNK_SIZE = 1000;  // characters per chunk
 var CHUNK_OVERLAP = 100;    // overlap between chunks
@@ -47,7 +47,7 @@ export async function processDocument(filePath, filename, mimetype, userId) {
   // 4. Save document record
   var docId = uuid();
   var fileSize = 0;
-  try { var stat = require('fs').statSync(filePath); fileSize = stat.size; } catch (e) {}
+  try { fileSize = statSync(filePath).size; } catch (e) {}
 
   db.prepare(
     'INSERT INTO documents (id, user_id, filename, file_type, file_size, chunk_count) VALUES (?, ?, ?, ?, ?, ?)'
@@ -84,9 +84,6 @@ export async function processDocument(filePath, filename, mimetype, userId) {
     throw new Error('向量化失败: ' + e.message);
   }
 
-  // Clean up uploaded file
-  try { unlinkSync(filePath); } catch (e) {}
-
   return db.prepare('SELECT * FROM documents WHERE id = ?').get(docId);
 }
 
@@ -105,7 +102,6 @@ export async function searchDocuments(userId, query) {
   var model = user.model || 'deepseek-chat';
 
   // Get query embedding
-  var { getEmbedding, cosineSimilarity } = require('./embedding.service.js');
   var queryEmbedding = await getEmbedding(query, apiKey, apiBase, model);
   if (!queryEmbedding) throw new Error('查询向量化失败');
 

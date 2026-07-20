@@ -5,8 +5,8 @@
 import { v4 as uuid } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { processDocument, deleteDocument } from '../services/document.service.js';
-import { writeFileSync, mkdirSync, existsSync } from 'fs';
-import { resolve } from 'path';
+import { writeFileSync, mkdirSync, existsSync, unlinkSync } from 'fs';
+import { resolve, basename } from 'path';
 
 var UPLOAD_DIR = resolve('data/uploads');
 
@@ -36,10 +36,16 @@ export function documentsRoutes(fastify, opts, done) {
       var filename = data.filename;
       var mimetype = data.mimetype;
 
-      // Validate file type by extension
+      // Validate file type by extension and MIME
       var ext = filename.split('.').pop().toLowerCase();
-      if (['pdf','txt','md','markdown','text'].indexOf(ext) === -1) {
+      var allowedExts = ['pdf','txt','md','markdown','text'];
+      var allowedMimes = ['application/pdf','text/plain','text/markdown','text/x-markdown'];
+      if (allowedExts.indexOf(ext) === -1) {
         reply.code(400).send({ error: '不支持的文件类型，请上传 PDF/TXT/Markdown 文件' });
+        return;
+      }
+      if (allowedMimes.indexOf(mimetype) === -1) {
+        reply.code(400).send({ error: '不支持的文件类型: ' + mimetype });
         return;
       }
 
@@ -50,14 +56,24 @@ export function documentsRoutes(fastify, opts, done) {
         return;
       }
 
+      // Sanitize filename to prevent path traversal
+      var safeName = basename(filename);
+      if (filename !== safeName) {
+        reply.code(400).send({ error: '文件名包含非法字符' });
+        return;
+      }
+
       // Save to disk temporarily
-      var tempPath = resolve(UPLOAD_DIR, uuid() + '_' + filename);
+      var tempPath = resolve(UPLOAD_DIR, uuid() + '_' + safeName);
       writeFileSync(tempPath, buffer);
 
-      // Process document (extract text, chunk, embed, store)
-      var doc = await processDocument(tempPath, filename, mimetype, request.user.id);
-
-      reply.code(201).send({ document: doc });
+      // Process document, clean up temp file in all cases
+      try {
+        var doc = await processDocument(tempPath, safeName, mimetype, request.user.id);
+        reply.code(201).send({ document: doc });
+      } finally {
+        try { unlinkSync(tempPath); } catch (e) {}
+      }
     } catch (e) {
       reply.code(400).send({ error: e.message });
     }

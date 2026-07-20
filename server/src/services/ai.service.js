@@ -18,6 +18,8 @@ var MAX_TOOL_ROUNDS = 5;
  * @param {Function} onDone - ({ messageId }) called when streaming is complete
  * @param {Function} onError - ({ message }) called on error
  */
+
+import { randomUUID } from 'crypto';
 export async function streamChat(ctx, onToken, onToolStart, onToolEnd, onDone, onError) {
   var db = getDb();
   var userId = ctx.userId;
@@ -55,7 +57,7 @@ export async function streamChat(ctx, onToken, onToolStart, onToolEnd, onDone, o
     }
 
     // 3. Save user message
-    var userMsgId = crypto_randomUUID();
+    var userMsgId = randomUUID();
     db.prepare('INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, ?, ?)').run(
       userMsgId, conversationId, 'user', ctx.message
     );
@@ -111,7 +113,7 @@ export async function streamChat(ctx, onToken, onToolStart, onToolEnd, onDone, o
       var content = (choice.message && choice.message.content) || '';
 
       // Save assistant message
-      var assistantMsgId = crypto_randomUUID();
+      var assistantMsgId = randomUUID();
       db.prepare('INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, ?, ?)').run(
         assistantMsgId, conversationId, 'assistant', content
       );
@@ -135,7 +137,7 @@ export async function streamChat(ctx, onToken, onToolStart, onToolEnd, onDone, o
     messages.push({ role: 'system', content: '你已经调用了太多次工具。请基于现有信息直接回答用户的问题。' });
     var finalResp = await callAISync(messages, apiBase, apiKey, model, systemPrompt, isAnthropic, false);
     var finalContent = (finalResp.choices && finalResp.choices[0] && finalResp.choices[0].message && finalResp.choices[0].message.content) || '抱歉，处理超时。';
-    var finalMsgId = crypto_randomUUID();
+    var finalMsgId = randomUUID();
     db.prepare('INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, ?, ?)').run(
       finalMsgId, conversationId, 'assistant', finalContent
     );
@@ -295,13 +297,4 @@ function convertForAnthropic(messages) {
     }
   }
   return result;
-}
-
-// Node-compatible crypto.randomUUID (polyfill for older Node versions)
-function crypto_randomUUID() {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
-    var r = Math.random() * 16 | 0;
-    var v = c === 'x' ? r : (r & 0x3 | 0x8);
-    return v.toString(16);
-  });
 }
