@@ -3,15 +3,19 @@
    ============================================================ */
 
 import { getDom } from './dom.js';
-import { getMessages, addMessage, setStreaming, isStreaming, getCurrentConversationId, setMessages } from './state.js';
+import {
+  getMessages, addMessage, setStreaming, isStreaming,
+  getCurrentConversationId, setCurrentConversation, addConversation,
+  getConversations, setConversations, getCards, clearMessages as clearAllMessages, setMessages,
+} from './state.js';
 import { getColor } from './palette.js';
 import { genId, showToast, scrollToBottom, autoScrollIfAllowed } from './utils.js';
 import { renderMarkdown } from './markdown.js';
 import { renderMessage, refreshMessage, renderConversation } from './renderer.js';
 import { syncSidebarHeights, rebuildSidebar } from './sidebar.js';
 import { createFloatingCard } from './cards.js';
-import { createChatStream, createConversation, fetchMessages } from './api.js';
-import { buildAnnotationContext, findAnnotationById } from './annotations.js';
+import { createChatStream, createConversation, fetchMessages, fetchConversations } from './api.js';
+import { buildAnnotationContext } from './annotations.js';
 
 // ---- Chat Send (backend version) ----
 
@@ -27,7 +31,6 @@ export async function handleSend() {
     try {
       var conv = await createConversation(text.slice(0, 40));
       convId = conv.id;
-      var { setCurrentConversation, addConversation } = await import('./state.js');
       setCurrentConversation(convId);
       addConversation(conv);
       await refreshConversationList();
@@ -60,7 +63,6 @@ export async function handleSend() {
       autoScrollIfAllowed(dom.workspace);
     },
     onToolStart: function (ts) {
-      // Insert tool call indicator into message
       if (bodyEl) {
         var toolDiv = document.createElement('div');
         toolDiv.className = 'tool-call';
@@ -70,7 +72,6 @@ export async function handleSend() {
       }
     },
     onToolEnd: function (te) {
-      // Update tool call with result
       if (bodyEl) {
         var toolEl = bodyEl.querySelector('.tool-call[data-tool-name="' + te.tool_name + '"]:last-child');
         if (toolEl) {
@@ -101,7 +102,7 @@ export async function handleSend() {
   });
 }
 
-// ---- Annotation (unchanged core logic, adapted for new api module) ----
+// ---- Annotation (unchanged core logic) ----
 
 export function handleAnnotateClick() {
   var dom = getDom();
@@ -145,8 +146,6 @@ export function handleAnnotateClick() {
   var ctx = buildAnnotationContext(msgId);
   ctx.push({ role: 'user', content: '在你之前的回答中提到了这段话：\n\n"' + st + '"\n\n追问：' + q + '\n\n请用一句话简洁回答，不要展开。' });
 
-  // For annotations, still use direct AI call since it's a quick Q&A
-  // Use the server chat but with a temporary conversation
   var convId = getCurrentConversationId();
   if (!convId) { showToast('请先开始对话', true); return; }
 
@@ -175,18 +174,17 @@ export function handleAnnotateClick() {
   });
 }
 
-export function escapeHTML(s) {
+function escapeHTML(s) {
   var d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
 }
 
-// ---- Conversation switching ----
+// ---- Conversation management ----
 
 export async function switchConversation(convId) {
-  var { setCurrentConversation, clearMessages, setMessages } = await import('./state.js');
   setCurrentConversation(convId);
-  clearMessages();
+  clearAllMessages();
 
   try {
     var msgs = await fetchMessages(convId);
@@ -202,8 +200,6 @@ export async function switchConversation(convId) {
 
 export async function refreshConversationList() {
   try {
-    var { fetchConversations } = await import('./api.js');
-    var { setConversations } = await import('./state.js');
     var convs = await fetchConversations();
     setConversations(convs);
     renderConversationList();
@@ -213,23 +209,16 @@ export async function refreshConversationList() {
 function renderConversationList() {
   var listEl = document.getElementById('conversationList');
   if (!listEl) return;
-  var { getConversations, getCurrentConversationId } = require('./state.js'); // eslint-disable-line
-  // Use dynamic import to avoid circular issues
-  import('./state.js').then(function (st) {
-    var convs = st.getConversations();
-    var curId = st.getCurrentConversationId();
-    var html = '';
-    for (var i = 0; i < convs.length; i++) {
-      var c = convs[i];
-      var active = c.id === curId ? ' active' : '';
-      html += '<div class="conv-item' + active + '" data-conv-id="' + c.id + '">' +
-        '<span class="conv-title">' + escapeHTML(c.title || '新对话') + '</span>' +
-        '<button class="conv-delete" data-conv-id="' + c.id + '">×</button>' +
-        '</div>';
-    }
-    listEl.innerHTML = html;
-  });
+  var convs = getConversations();
+  var curId = getCurrentConversationId();
+  var html = '';
+  for (var i = 0; i < convs.length; i++) {
+    var c = convs[i];
+    var active = c.id === curId ? ' active' : '';
+    html += '<div class="conv-item' + active + '" data-conv-id="' + c.id + '">' +
+      '<span class="conv-title">' + escapeHTML(c.title || '新对话') + '</span>' +
+      '<button class="conv-delete" data-conv-id="' + c.id + '">×</button>' +
+      '</div>';
+  }
+  listEl.innerHTML = html;
 }
-
-// Make renderConversationList globally accessible
-window.refreshConvList = refreshConversationList;

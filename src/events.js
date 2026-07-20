@@ -3,16 +3,15 @@
    ============================================================ */
 
 import { getDom } from './dom.js';
-import { trackUserScroll } from './utils.js';
-import { handleSend, handleAnnotateClick, refreshConversationList } from './handles.js';
+import { trackUserScroll, showToast } from './utils.js';
+import { handleSend, handleAnnotateClick, refreshConversationList, switchConversation } from './handles.js';
 import { handleSelection } from './selection.js';
 import { openSettings, closeSettings, saveSettings, resetSettings, autoResize } from './settings.js';
 import { clickAnnotation } from './cards.js';
 import { renderConversation } from './renderer.js';
-import { showToast } from './utils.js';
 import { isLoggedIn, login, register, logout, getUser } from './auth.js';
-import { setAuth } from './state.js';
-import { refreshConversationList as refreshList } from './handles.js';
+import { setAuth, clearAuth, clearMessages, clearAllCards, setConversations, setCurrentConversation, addConversation, getCards } from './state.js';
+import { deleteConversation, createConversation as apiCreateConversation } from './api.js';
 import { fetchDocuments, uploadFile, deleteDocument, renderDocumentList } from './documents.js';
 
 export function init() {
@@ -36,7 +35,6 @@ export function init() {
 }
 
 function showLogin(dom) {
-  // Hide app, show login form
   document.querySelector('.app').style.display = 'none';
   var loginHtml =
     '<div class="auth-overlay" id="authOverlay">' +
@@ -66,7 +64,6 @@ function showLogin(dom) {
     if (e.target === overlay) { /* no-op, must login */ }
   });
 
-  // Tab switching
   overlay.querySelectorAll('.auth-tab').forEach(function (btn) {
     btn.addEventListener('click', function () {
       tab = this.dataset.tab;
@@ -76,7 +73,6 @@ function showLogin(dom) {
     });
   });
 
-  // Form submit
   form.addEventListener('submit', async function (e) {
     e.preventDefault();
     var email = document.getElementById('authEmail').value.trim();
@@ -166,17 +162,12 @@ function showApp(dom) {
         e.stopPropagation();
         var cid = delBtn.dataset.convId;
         if (confirm('删除这个对话？')) {
-          import('./api.js').then(function (api) {
-            api.deleteConversation(cid).then(function () {
-              refreshConversationList();
-            });
-          });
+          deleteConversation(cid).then(function () { refreshConversationList(); });
         }
         return;
       }
       if (item) {
-        var cid = item.dataset.convId;
-        import('./handles.js').then(function (h) { h.switchConversation(cid); });
+        switchConversation(item.dataset.convId);
       }
     });
   }
@@ -186,9 +177,7 @@ function showApp(dom) {
   if (btnNewConv) {
     btnNewConv.addEventListener('click', async function () {
       try {
-        var { createConversation } = await import('./api.js');
-        var conv = await createConversation();
-        var { setCurrentConversation, addConversation, clearMessages } = await import('./state.js');
+        var conv = await apiCreateConversation();
         setCurrentConversation(conv.id);
         addConversation(conv);
         clearMessages();
@@ -205,10 +194,12 @@ function showApp(dom) {
   if (btnLogout) {
     btnLogout.addEventListener('click', function () {
       logout();
-      var { clearAuth, clearMessages, clearAllCards, setConversations, setCurrentConversation } = import('./state.js').then(function (st) {
-        st.clearAuth(); st.clearMessages(); st.clearAllCards(); st.setConversations([]); st.setCurrentConversation(null);
-        window.location.reload();
-      });
+      clearAuth();
+      clearMessages();
+      clearAllCards();
+      setConversations([]);
+      setCurrentConversation(null);
+      window.location.reload();
     });
   }
 
@@ -219,7 +210,13 @@ function showApp(dom) {
 
   // ---- Document management ----
   loadDocuments();
+  setupDocumentEvents();
+}
 
+// Need a wrapper for addConversation to avoid name collision with import
+// Already imported statically above as addConversation
+
+function setupDocumentEvents() {
   var btnUploadDoc = document.getElementById('btnUploadDoc');
   var fileInput = document.getElementById('fileInput');
   var docListEl = document.getElementById('documentList');
@@ -243,7 +240,6 @@ function showApp(dom) {
     });
   }
 
-  // Drag and drop on document panel
   if (docListEl) {
     docListEl.addEventListener('dragover', function (e) { e.preventDefault(); docListEl.classList.add('doc-dragover'); });
     docListEl.addEventListener('dragleave', function () { docListEl.classList.remove('doc-dragover'); });
@@ -262,10 +258,7 @@ function showApp(dom) {
       }
       loadDocuments();
     });
-  }
 
-  // Document delete delegation
-  if (docListEl) {
     docListEl.addEventListener('click', async function (e) {
       var delBtn = e.target.closest('.doc-delete');
       if (delBtn) {
@@ -285,13 +278,12 @@ function showApp(dom) {
   }
 }
 
-async function clearConversation() {
+function clearConversation() {
   if (!confirm('清空所有对话和批注？')) return;
-  var st = await import('./state.js');
-  var cards = st.getCards();
+  var cards = getCards();
   for (var k in cards) { if (cards[k].el) cards[k].el.remove(); }
-  st.clearMessages();
-  st.clearAllCards();
+  clearMessages();
+  clearAllCards();
   var dom = getDom();
   dom.sidebarLeftInner.innerHTML = '';
   dom.sidebarRightInner.innerHTML = '';
