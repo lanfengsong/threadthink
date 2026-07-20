@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - JWT_SECRET=threadthink-prod-jwt-secret
+      - ENCRYPTION_SECRET=threadthink-32char-encryption-key!
+      - DB_PATH=/app/data/threadthink.db
+    volumes:
+      - threadthink-data:/app/data
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  threadthink-data:

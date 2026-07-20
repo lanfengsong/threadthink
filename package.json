@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "repository": {
     "type": "git",
@@ -23,6 +25,10 @@
   "license": "MIT",
   "homepage": "https://github.com/lanfengsong/threadthink#readme",
   "devDependencies": {
-    "vite": "^8.1.5"
+    "vite": "^8.1.5",
+    "vitest": "^3.2.7"
+  },
+  "dependencies": {
+    "jsdom": "^29.1.1"
   }
 }
