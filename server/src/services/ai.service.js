@@ -4,7 +4,8 @@
 
 import { getDb } from '../db/connection.js';
 import { decrypt } from './crypto.service.js';
-import { getToolDefinitions, executeTool, setToolUserId } from './tools/index.js';
+import { getToolDefinitions, executeTool } from './tools/index.js';
+import { randomUUID } from 'crypto';
 
 var MAX_TOOL_ROUNDS = 5;
 
@@ -18,18 +19,17 @@ var MAX_TOOL_ROUNDS = 5;
  * @param {Function} onDone - ({ messageId }) called when streaming is complete
  * @param {Function} onError - ({ message }) called on error
  */
-
-import { randomUUID } from 'crypto';
 export async function streamChat(ctx, onToken, onToolStart, onToolEnd, onDone, onError) {
   var db = getDb();
   var userId = ctx.userId;
   var conversationId = ctx.conversationId;
 
-  // Set userId for doc_search tool context
-  setToolUserId(userId);
-
   try {
-    // 1. Get user config (decrypted API key)
+    // Validate ownership here as well as in the route: this service must not
+    // read history for a conversation that belongs to another user.
+    var conversation = db.prepare('SELECT id FROM conversations WHERE id = ? AND user_id = ?').get(conversationId, userId);
+    if (!conversation) { onError({ message: '对话不存在' }); return; }
+
     var user = db.prepare('SELECT api_key, api_base, model FROM users WHERE id = ?').get(userId);
     if (!user) { onError({ message: '用户不存在' }); return; }
 
@@ -41,260 +41,280 @@ export async function streamChat(ctx, onToken, onToolStart, onToolEnd, onDone, o
     var settings = db.prepare('SELECT system_prompt FROM user_settings WHERE user_id = ?').get(userId);
     var systemPrompt = settings ? settings.system_prompt : '你是一个有帮助的AI助手，请用中文回答用户的问题。';
 
-    // 2. Build messages array from history
-    var messages = [];
-
-    // System prompt
-    messages.push({ role: 'system', content: systemPrompt });
-
-    // History messages for this conversation
+    var messages = [{ role: 'system', content: systemPrompt }];
     var history = db.prepare(
       'SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY created_at ASC'
     ).all(conversationId);
-
     for (var i = 0; i < history.length; i++) {
       messages.push({ role: history[i].role, content: history[i].content });
     }
 
-    // 3. Save user message
     var userMsgId = randomUUID();
     db.prepare('INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, ?, ?)').run(
       userMsgId, conversationId, 'user', ctx.message
     );
     messages.push({ role: 'user', content: ctx.message });
-
-    // Update conversation updated_at
     db.prepare("UPDATE conversations SET updated_at = datetime('now') WHERE id = ?").run(conversationId);
 
-    // 4. Tool execution loop — non-streaming calls until AI decides to respond with text
     var toolRounds = 0;
-    var isAnthropic = apiBase.indexOf('anthropic.com') !== -1;
+    var toolAudit = [];
+    var isAnthropic = isAnthropicApi(apiBase);
 
     while (toolRounds < MAX_TOOL_ROUNDS) {
       var aiResponse = await callAISync(messages, apiBase, apiKey, model, systemPrompt, isAnthropic, true);
+      var choice = normalizeAiResponse(aiResponse, isAnthropic);
 
-      var choice = (aiResponse.choices && aiResponse.choices[0]) || {};
-      var finishReason = choice.finish_reason;
-
-      // Check for tool calls
-      if (finishReason === 'tool_calls' && choice.message && choice.message.tool_calls) {
+      if (choice.finish_reason === 'tool_calls' && choice.message.tool_calls.length > 0) {
         toolRounds++;
-
-        // Add assistant message with tool calls
         messages.push({
           role: 'assistant',
           content: choice.message.content || '',
           tool_calls: choice.message.tool_calls,
         });
 
-        // Execute each tool
         for (var t = 0; t < choice.message.tool_calls.length; t++) {
           var tc = choice.message.tool_calls[t];
           var toolName = tc.function.name;
-          var toolArgs = JSON.parse(tc.function.arguments || '{}');
+          var toolArgs;
+          var toolResult;
+          try {
+            toolArgs = JSON.parse(tc.function.arguments || '{}');
+            if (!toolArgs || typeof toolArgs !== 'object' || Array.isArray(toolArgs)) throw new Error('工具参数必须是对象');
+          } catch (e) {
+            toolArgs = {};
+            toolResult = { error: '工具参数无效: ' + e.message };
+          }
 
           onToolStart({ tool_name: toolName, arguments: toolArgs });
-
-          var toolResult = await executeTool(toolName, toolArgs);
-          onToolEnd({ tool_name: toolName, result: toolResult });
-
-          // Add tool result to messages
-          messages.push({
-            role: 'tool',
-            tool_call_id: tc.id,
-            content: JSON.stringify(toolResult),
+          if (toolResult === undefined) toolResult = await executeTool(toolName, toolArgs, { userId: userId });
+          toolAudit.push({
+            tool_name: toolName,
+            arguments: toolArgs,
+            result: toolResult,
+            status: toolResult && toolResult.error ? 'error' : 'done',
           });
+          onToolEnd({ tool_name: toolName, result: toolResult });
+          messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(toolResult) });
         }
-
-        continue; // Loop back to let AI process tool results
+        continue;
       }
 
-      // Normal text response — extract content and break
-      var content = (choice.message && choice.message.content) || '';
-
-      // Save assistant message
+      var streamedContent = '';
+      await streamTextResponse(messages, apiBase, apiKey, model, systemPrompt, isAnthropic, function (token) {
+        streamedContent += token;
+        onToken(token);
+      });
       var assistantMsgId = randomUUID();
-      db.prepare('INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, ?, ?)').run(
-        assistantMsgId, conversationId, 'assistant', content
-      );
-
-      // 5. Stream the final text to frontend
-      await streamTextResponse(messages, apiBase, apiKey, model, systemPrompt, isAnthropic, onToken);
-
+      persistAssistantAndAudit(db, conversationId, assistantMsgId, streamedContent, toolAudit, ctx.message);
       onDone({ messageId: assistantMsgId });
-
-      // Auto-title: set conversation title from first exchange
-      var msgCount = db.prepare('SELECT COUNT(*) as c FROM messages WHERE conversation_id = ?').get(conversationId);
-      if (msgCount && msgCount.c === 2) {
-        var title = ctx.message.slice(0, 40) + (ctx.message.length > 40 ? '...' : '');
-        db.prepare('UPDATE conversations SET title = ? WHERE id = ?').run(title, conversationId);
-      }
-
       return;
     }
 
-    // Exceeded max tool rounds — force final response
     messages.push({ role: 'system', content: '你已经调用了太多次工具。请基于现有信息直接回答用户的问题。' });
     var finalResp = await callAISync(messages, apiBase, apiKey, model, systemPrompt, isAnthropic, false);
-    var finalContent = (finalResp.choices && finalResp.choices[0] && finalResp.choices[0].message && finalResp.choices[0].message.content) || '抱歉，处理超时。';
+    var finalChoice = normalizeAiResponse(finalResp, isAnthropic);
+    var finalContent = finalChoice.message.content;
+    if (!finalContent) throw new Error('AI API 返回了无效的最终响应');
     var finalMsgId = randomUUID();
-    db.prepare('INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, ?, ?)').run(
-      finalMsgId, conversationId, 'assistant', finalContent
-    );
+    persistAssistantAndAudit(db, conversationId, finalMsgId, finalContent, toolAudit, ctx.message);
     onToken(finalContent);
     onDone({ messageId: finalMsgId });
-
   } catch (e) {
     onError({ message: e.message || '未知错误' });
   }
 }
 
-// ============================================================
-// Internal helpers
-// ============================================================
+function persistAssistantAndAudit(db, conversationId, messageId, content, calls, userMessage) {
+  var tx = db.transaction(function () {
+    db.prepare('INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, ?, ?)').run(
+      messageId, conversationId, 'assistant', content
+    );
+    persistToolCalls(db, messageId, calls);
+    var msgCount = db.prepare('SELECT COUNT(*) as c FROM messages WHERE conversation_id = ?').get(conversationId);
+    if (msgCount && msgCount.c === 2) {
+      var title = userMessage.slice(0, 40) + (userMessage.length > 40 ? '...' : '');
+      db.prepare('UPDATE conversations SET title = ? WHERE id = ?').run(title, conversationId);
+    }
+  });
+  tx();
+}
 
-/**
- * Non-streaming AI call (for tool execution rounds).
- * Returns parsed JSON response.
- */
+function persistToolCalls(db, messageId, calls) {
+  if (!calls || calls.length === 0) return;
+  var insert = db.prepare(
+    'INSERT INTO tool_calls (id, message_id, tool_name, arguments, result, status) VALUES (?, ?, ?, ?, ?, ?)'
+  );
+  for (var i = 0; i < calls.length; i++) {
+    var call = calls[i];
+    insert.run(
+      randomUUID(), messageId, call.tool_name,
+      JSON.stringify(call.arguments || {}),
+      JSON.stringify(call.result === undefined ? null : call.result),
+      call.status || 'done'
+    );
+  }
+}
+
+function isAnthropicApi(apiBase) {
+  try { return new URL(apiBase).hostname === 'api.anthropic.com'; } catch (e) { return false; }
+}
+
+function normalizeAiResponse(response, isAnthropic) {
+  if (!response || typeof response !== 'object') throw new Error('AI API 返回了无效响应');
+  if (!isAnthropic) {
+    if (!Array.isArray(response.choices) || !response.choices[0] || typeof response.choices[0] !== 'object') {
+      throw new Error('AI API 返回了无效响应');
+    }
+    var openChoice = response.choices[0];
+    if (!openChoice.message || typeof openChoice.message !== 'object') throw new Error('AI API 返回了无效响应');
+    var openToolCalls = openChoice.message.tool_calls === undefined ? [] : openChoice.message.tool_calls;
+    if (!Array.isArray(openToolCalls)) throw new Error('AI API 返回了无效响应');
+    if (!openChoice.finish_reason) throw new Error('AI API 返回了无效响应');
+    openChoice.message.tool_calls = openToolCalls;
+    return openChoice;
+  }
+
+  if (!Array.isArray(response.content) || response.content.length === 0) throw new Error('AI API 返回了无效响应');
+  var blocks = response.content;
+  var toolCalls = blocks.filter(function (block) { return block && block.type === 'tool_use'; }).map(function (block) {
+    if (!block.id || !block.name) throw new Error('AI API 返回了无效工具调用');
+    return { id: block.id, type: 'function', function: { name: block.name, arguments: JSON.stringify(block.input === undefined ? {} : block.input) } };
+  });
+  var text = blocks.filter(function (block) { return block && block.type === 'text'; }).map(function (block) {
+    return typeof block.text === 'string' ? block.text : '';
+  }).join('');
+  var finishReason = response.stop_reason;
+  if (finishReason === 'tool_use' || toolCalls.length > 0) finishReason = 'tool_calls';
+  if (!finishReason) throw new Error('AI API 返回了无效响应');
+  return { finish_reason: finishReason, message: { content: text, tool_calls: toolCalls } };
+}
+
 async function callAISync(messages, apiBase, apiKey, model, systemPrompt, isAnthropic, withTools) {
   var body;
   if (isAnthropic) {
-    body = {
-      model: model,
-      max_tokens: 4096,
-      system: systemPrompt,
-      messages: convertForAnthropic(messages),
-      stream: false,
-    };
-    if (withTools) {
-      body.tools = getToolDefinitions().map(function (d) {
-        return { name: d.function.name, description: d.function.description, input_schema: d.function.parameters };
-      });
-    }
+    body = { model: model, max_tokens: 4096, system: getAnthropicSystemPrompt(messages, systemPrompt), messages: convertForAnthropic(messages), stream: false };
+    if (withTools) body.tools = getToolDefinitions().map(function (d) {
+      return { name: d.function.name, description: d.function.description, input_schema: d.function.parameters };
+    });
   } else {
-    body = {
-      model: model,
-      max_tokens: 4096,
-      messages: messages,
-      stream: false,
-    };
-    if (withTools) {
-      body.tools = getToolDefinitions();
-      body.tool_choice = 'auto';
-    }
+    body = { model: model, max_tokens: 4096, messages: messages, stream: false };
+    if (withTools) { body.tools = getToolDefinitions(); body.tool_choice = 'auto'; }
   }
-
   var headers = { 'Content-Type': 'application/json' };
-  if (isAnthropic) {
-    headers['x-api-key'] = apiKey;
-    headers['anthropic-version'] = '2023-06-01';
-  } else {
-    headers['Authorization'] = 'Bearer ' + apiKey;
-  }
-
+  if (isAnthropic) { headers['x-api-key'] = apiKey; headers['anthropic-version'] = '2023-06-01'; }
+  else headers['Authorization'] = 'Bearer ' + apiKey;
   var resp = await fetch(apiBase, { method: 'POST', headers: headers, body: JSON.stringify(body) });
   if (!resp.ok) {
-    var text = await resp.text();
-    throw new Error('AI API ' + resp.status + ': ' + text.slice(0, 300));
+    var errorText = await resp.text();
+    throw new Error('AI API ' + resp.status + ': ' + errorText.slice(0, 300));
   }
   return await resp.json();
 }
 
-/**
- * Stream only the final text response to the frontend.
- * Uses SSE internally from the AI provider, forwards tokens via onToken.
- */
 async function streamTextResponse(messages, apiBase, apiKey, model, systemPrompt, isAnthropic, onToken) {
   var body;
-  if (isAnthropic) {
-    body = {
-      model: model,
-      max_tokens: 4096,
-      system: systemPrompt,
-      messages: convertForAnthropic(messages),
-      stream: true,
-    };
-  } else {
-    body = {
-      model: model,
-      max_tokens: 4096,
-      messages: messages,
-      stream: true,
-    };
-  }
-
+  if (isAnthropic) body = { model: model, max_tokens: 4096, system: getAnthropicSystemPrompt(messages, systemPrompt), messages: convertForAnthropic(messages), stream: true };
+  else body = { model: model, max_tokens: 4096, messages: messages, stream: true };
   var headers = { 'Content-Type': 'application/json' };
-  if (isAnthropic) {
-    headers['x-api-key'] = apiKey;
-    headers['anthropic-version'] = '2023-06-01';
-  } else {
-    headers['Authorization'] = 'Bearer ' + apiKey;
-  }
+  if (isAnthropic) { headers['x-api-key'] = apiKey; headers['anthropic-version'] = '2023-06-01'; }
+  else headers['Authorization'] = 'Bearer ' + apiKey;
 
   var resp = await fetch(apiBase, { method: 'POST', headers: headers, body: JSON.stringify(body) });
   if (!resp.ok) {
-    var text = await resp.text();
-    throw new Error('AI API ' + resp.status + ': ' + text.slice(0, 300));
+    var errorText = await resp.text();
+    throw new Error('AI API ' + resp.status + ': ' + errorText.slice(0, 300));
   }
+  if (!resp.body || typeof resp.body.getReader !== 'function') throw new Error('AI API 返回了无效流');
 
   var reader = resp.body.getReader();
   var decoder = new TextDecoder();
   var buffer = '';
+  var eventData = [];
+  var sawTerminal = false;
 
-  while (true) {
-    var v = await reader.read();
-    if (v.done) break;
-    buffer += decoder.decode(v.value, { stream: true });
-    var lines = buffer.split('\n');
-    buffer = lines.pop() || '';
-
-    for (var i = 0; i < lines.length; i++) {
-      var ln = lines[i].trim();
-      if (!ln || ln.indexOf('data: ') !== 0) continue;
-      var d = ln.slice(6);
-      if (d === '[DONE]') continue;
-      try {
-        var json = JSON.parse(d);
-        var chunk = '';
-        if (isAnthropic) {
-          if (json.type === 'content_block_delta' && json.delta && json.delta.text) chunk = json.delta.text;
-        } else {
-          var delta = json.choices && json.choices[0] && json.choices[0].delta;
-          if (delta && delta.content) chunk = delta.content;
-        }
-        if (chunk) onToken(chunk);
-      } catch (e) {}
+  function processEvent() {
+    if (eventData.length === 0) return;
+    var data = eventData.join('\n');
+    eventData = [];
+    if (data === '[DONE]') { sawTerminal = true; return; }
+    var json;
+    try { json = JSON.parse(data); } catch (e) { throw new Error('AI 流返回了无效事件'); }
+    if (json.error || json.type === 'error') {
+      var providerError = json.error && (json.error.message || json.error.type) || json.message || 'AI provider error';
+      throw new Error('AI API 流错误: ' + providerError);
     }
+    if (isAnthropic && json.type === 'message_stop') { sawTerminal = true; return; }
+    var chunk = '';
+    if (isAnthropic) {
+      if (json.type === 'content_block_delta' && json.delta && typeof json.delta.text === 'string') chunk = json.delta.text;
+    } else {
+      var delta = json.choices && json.choices[0] && json.choices[0].delta;
+      if (delta && typeof delta.content === 'string') chunk = delta.content;
+      if (json.choices && json.choices[0] && json.choices[0].finish_reason === 'error') throw new Error('AI API 流错误');
+    }
+    // Keep callback failures outside the JSON parse guard so they reach the
+    // request handler instead of being silently mistaken for malformed data.
+    if (chunk) onToken(chunk);
+  }
+
+  function processLine(line) {
+    var normalized = line.endsWith('\r') ? line.slice(0, -1) : line;
+    if (normalized === '') { processEvent(); return; }
+    if (normalized.startsWith(':')) return;
+    if (normalized.startsWith('data:')) {
+      var value = normalized.slice(5);
+      if (value.startsWith(' ')) value = value.slice(1);
+      eventData.push(value);
+    }
+  }
+
+  try {
+    while (true) {
+      var value = await reader.read();
+      if (value.done) {
+        buffer += decoder.decode();
+        if (buffer) { processLine(buffer); buffer = ''; }
+        processEvent();
+        break;
+      }
+      buffer += decoder.decode(value.value, { stream: true });
+      var lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (var i = 0; i < lines.length; i++) processLine(lines[i]);
+    }
+    if (!sawTerminal) throw new Error('AI 流在终止事件前中断');
+  } finally {
+    try { await reader.cancel(); } finally { if (reader.releaseLock) reader.releaseLock(); }
   }
 }
 
-/**
- * Convert OpenAI-format messages to Anthropic format.
- * Anthropic doesn't support 'system' or 'tool' roles in messages array.
- */
+function getAnthropicSystemPrompt(messages, systemPrompt) {
+  var systemMessages = messages.filter(function (message) { return message.role === 'system'; });
+  if (systemMessages.length === 0) return systemPrompt;
+  return systemMessages.map(function (message) { return message.content; }).join('\n');
+}
+
 function convertForAnthropic(messages) {
   var result = [];
   for (var i = 0; i < messages.length; i++) {
     var m = messages[i];
-    if (m.role === 'system') continue; // system prompt is separate
+    if (m.role === 'system') continue;
     if (m.role === 'tool') {
-      result.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: m.tool_call_id, content: m.content }] });
+      var last = result[result.length - 1];
+      var block = { type: 'tool_result', tool_use_id: m.tool_call_id, content: m.content };
+      if (last && last.role === 'user' && Array.isArray(last.content) && last.content.every(function (b) { return b.type === 'tool_result'; })) last.content.push(block);
+      else result.push({ role: 'user', content: [block] });
     } else if (m.tool_calls) {
       var contentBlocks = [];
       if (m.content) contentBlocks.push({ type: 'text', text: m.content });
       for (var j = 0; j < m.tool_calls.length; j++) {
         contentBlocks.push({
-          type: 'tool_use',
-          id: m.tool_calls[j].id,
-          name: m.tool_calls[j].function.name,
+          type: 'tool_use', id: m.tool_calls[j].id, name: m.tool_calls[j].function.name,
           input: JSON.parse(m.tool_calls[j].function.arguments || '{}'),
         });
       }
       result.push({ role: 'assistant', content: contentBlocks });
-    } else {
-      result.push({ role: m.role, content: m.content });
-    }
+    } else result.push({ role: m.role, content: m.content });
   }
   return result;
 }

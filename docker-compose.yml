@@ -8,8 +8,8 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - JWT_SECRET=threadthink-prod-jwt-secret
-      - ENCRYPTION_SECRET=threadthink-32char-encryption-key!
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set in .env or shell}
+      - ENCRYPTION_SECRET=${ENCRYPTION_SECRET:?ENCRYPTION_SECRET must be set in .env or shell}
       - DB_PATH=/app/data/threadthink.db
     volumes:
       - threadthink-data:/app/data

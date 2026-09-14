@@ -183,22 +183,34 @@ threadthink/
 | `DELETE` | `/api/documents/:id` | 删除文档 |
 | `GET` | `/api/health` | 健康检查 |
 
-## 🧪 测试
+## 🧪 测试与质量门禁
+
+前端测试使用 Vitest，后端测试使用 Node.js 原生 `node:test` 与 Fastify `inject()`。后端集成测试会创建临时 SQLite 数据库，并对 AI、Embedding 和网页请求使用可控替身，不需要真实 API Key 或公网服务。
 
 ```bash
 # 前端单元测试
 npm test
 
-# 监听模式
+# 前端监听模式
 npm run test:watch
 
-# 创建测试覆盖报告
-npx vitest run --coverage
+# 后端单元/集成测试
+cd server && npm test && cd ..
+
+# 前端生产构建
+npm run build
 ```
+
+CI 会在构建 Docker 镜像前执行前后端测试；任一测试失败都会阻断流水线，不会吞掉失败结果。
+
+当前测试重点覆盖：认证参数校验、会话资源归属隔离、Chat IDOR 回归、文档分块、工具输入安全校验、SSE 分块与 EOF 解析，以及流式聊天异常收尾。运行测试前请以 Node.js 22.x 或更高版本安装根目录和 `server/` 目录依赖。最近一次验证结果见 [QUALITY_REPORT.md](QUALITY_REPORT.md)，其中明确区分了已运行检查和未执行的 Docker 验证。
+
+> 已知边界：`fetch_url` 当前覆盖协议、字面量内网地址和重定向基础校验，尚未实现 DNS 解析后的 IP 校验、DNS rebinding 防护和完整响应体限制；Anthropic tool_use 已做响应形状适配，但仍应在目标服务商环境中进行端到端验证。
 
 ## 🐳 Docker 部署
 
 ```bash
+# 先在 .env 或当前 shell 中设置 JWT_SECRET、ENCRYPTION_SECRET
 # 构建并启动全部服务（前端 :8080 + 后端 :3000）
 docker compose up -d --build
 

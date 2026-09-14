@@ -9,3 +9,8 @@ var dom = new JSDOM('<!DOCTYPE html><html><body></body></html>', {
 });
 globalThis.document = dom.window.document;
 globalThis.window = dom.window;
+globalThis.localStorage = dom.window.localStorage;
+Object.defineProperty(globalThis, 'navigator', {
+  configurable: true,
+  value: dom.window.navigator,
+});

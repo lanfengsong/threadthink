@@ -100,8 +100,3 @@ function countUniqueDocs(scored) {
   }
   return Object.keys(seen).length;
 }
-
-/** Set the userId context for tool execution */
-docSearchTool.setUserId = function (uid) {
-  docSearchTool._userId = uid;
-};

@@ -7,53 +7,21 @@ import { v4 as uuid } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { decrypt } from './crypto.service.js';
 import { getEmbeddings, getEmbedding, cosineSimilarity } from './embedding.service.js';
+import { splitChunks } from './chunking.js';
 
-var MAX_CHUNK_SIZE = 1000;  // characters per chunk
-var CHUNK_OVERLAP = 100;    // overlap between chunks
+export { splitChunks } from './chunking.js';
 
-/**
- * Process an uploaded file:
- * 1. Read file content
- * 2. Extract plain text based on file type
- * 3. Split into chunks
- * 4. Get embeddings for all chunks
- * 5. Store document + chunks in DB
- *
- * @param {string} filePath - path to uploaded file
- * @param {string} filename - original filename
- * @param {string} mimetype - MIME type
- * @param {string} userId
- * @returns {Promise<Object>} document record
- */
 export async function processDocument(filePath, filename, mimetype, userId) {
   var db = getDb();
-
-  // 1. Detect file type
   var fileType = detectFileType(filename, mimetype);
   if (!fileType) throw new Error('不支持的文件类型。支持: PDF, TXT, Markdown');
 
-  // 2. Extract text
   var rawText = extractText(filePath, fileType);
+  if (!rawText || rawText.trim().length === 0) throw new Error('文件内容为空或无法提取文本');
 
-  if (!rawText || rawText.trim().length === 0) {
-    throw new Error('文件内容为空或无法提取文本');
-  }
-
-  // 3. Split into chunks
   var chunks = splitChunks(rawText);
-
   if (chunks.length === 0) throw new Error('无法分段，文件内容可能太短');
 
-  // 4. Save document record
-  var docId = uuid();
-  var fileSize = 0;
-  try { fileSize = statSync(filePath).size; } catch (e) {}
-
-  db.prepare(
-    'INSERT INTO documents (id, user_id, filename, file_type, file_size, chunk_count) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(docId, userId, filename, fileType, fileSize, chunks.length);
-
-  // 5. Get user API config for embeddings
   var user = db.prepare('SELECT api_key, api_base, model FROM users WHERE id = ?').get(userId);
   if (!user || !user.api_key) throw new Error('请先在设置中配置 API Key');
   var apiKey = decrypt(user.api_key);
@@ -61,259 +29,161 @@ export async function processDocument(filePath, filename, mimetype, userId) {
   var apiBase = user.api_base || 'https://api.deepseek.com/v1/chat/completions';
   var model = user.model || 'deepseek-chat';
 
-  // 6. Get embeddings for all chunks (batch)
+  // Network work must finish before entering the synchronous SQLite transaction.
+  var embeddings;
   try {
-    var embeddings = await getEmbeddings(chunks, apiKey, apiBase, model);
-
-    // 7. Save chunks with embeddings
-    var insertChunk = db.prepare(
-      'INSERT INTO chunks (id, document_id, chunk_index, content, embedding, token_count) VALUES (?, ?, ?, ?, ?, ?)'
-    );
-
-    var insertAll = db.transaction(function () {
-      for (var i = 0; i < chunks.length; i++) {
-        var embJson = embeddings[i] ? JSON.stringify(embeddings[i]) : null;
-        insertChunk.run(uuid(), docId, i, chunks[i], embJson, Math.ceil(chunks[i].length / 2));
-      }
-    });
-
-    insertAll();
+    embeddings = await getEmbeddings(chunks, apiKey, apiBase, model);
   } catch (e) {
-    // Clean up document record on failure
-    db.prepare('DELETE FROM documents WHERE id = ?').run(docId);
     throw new Error('向量化失败: ' + e.message);
   }
+  if (!Array.isArray(embeddings) || embeddings.length !== chunks.length) {
+    throw new Error('向量化失败: 向量数量与文本分块数量不一致');
+  }
+
+  var docId = uuid();
+  var fileSize = 0;
+  try { fileSize = statSync(filePath).size; } catch (e) { /* best effort */ }
+
+  var insertChunk = db.prepare(
+    'INSERT INTO chunks (id, document_id, chunk_index, content, embedding, token_count) VALUES (?, ?, ?, ?, ?, ?)'
+  );
+  var insertAll = db.transaction(function () {
+    db.prepare(
+      'INSERT INTO documents (id, user_id, filename, file_type, file_size, chunk_count) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(docId, userId, filename, fileType, fileSize, chunks.length);
+    for (var i = 0; i < chunks.length; i++) {
+      insertChunk.run(uuid(), docId, i, chunks[i], JSON.stringify(embeddings[i]), Math.ceil(chunks[i].length / 2));
+    }
+  });
+  insertAll();
 
   return db.prepare('SELECT * FROM documents WHERE id = ?').get(docId);
 }
 
-/**
- * Search documents for relevant chunks.
- * Uses cosine similarity on stored embeddings.
- */
 export async function searchDocuments(userId, query) {
   var db = getDb();
-
   var user = db.prepare('SELECT api_key, api_base, model FROM users WHERE id = ?').get(userId);
   if (!user || !user.api_key) throw new Error('请先配置 API Key');
   var apiKey = decrypt(user.api_key);
   if (!apiKey) throw new Error('API Key 解密失败');
   var apiBase = user.api_base || 'https://api.deepseek.com/v1/chat/completions';
   var model = user.model || 'deepseek-chat';
-
-  // Get query embedding
   var queryEmbedding = await getEmbedding(query, apiKey, apiBase, model);
   if (!queryEmbedding) throw new Error('查询向量化失败');
 
-  // Get all chunks for this user's documents
   var chunks = db.prepare(
     'SELECT c.id, c.content, c.embedding, c.chunk_index, d.filename, d.id as doc_id ' +
-    'FROM chunks c JOIN documents d ON c.document_id = d.id ' +
-    'WHERE d.user_id = ?'
+    'FROM chunks c JOIN documents d ON c.document_id = d.id WHERE d.user_id = ?'
   ).all(userId);
-
-  if (chunks.length === 0) return [];
-
-  // Calculate similarities
   var scored = [];
   for (var i = 0; i < chunks.length; i++) {
     var emb = null;
-    try {
-      if (chunks[i].embedding) emb = JSON.parse(chunks[i].embedding);
-    } catch (e) {}
+    try { if (chunks[i].embedding) emb = JSON.parse(chunks[i].embedding); } catch (e) { /* skip malformed old rows */ }
     if (!emb) continue;
-
-    var score = cosineSimilarity(queryEmbedding, emb);
     scored.push({
-      chunk_id: chunks[i].id,
-      document_id: chunks[i].doc_id,
       filename: chunks[i].filename,
-      chunk_index: chunks[i].chunk_index,
       content: chunks[i].content,
-      score: score,
+      score: cosineSimilarity(queryEmbedding, emb),
     });
   }
-
-  // Sort by similarity descending, take top 5
   scored.sort(function (a, b) { return b.score - a.score; });
-  var top = scored.slice(0, 5);
-
-  return top.map(function (s) {
-    return {
-      filename: s.filename,
-      content: s.content,
-      score: Math.round(s.score * 100) / 100,
-    };
+  return scored.slice(0, 5).map(function (item) {
+    return { filename: item.filename, content: item.content, score: Math.round(item.score * 100) / 100 };
   });
 }
 
-/**
- * Delete a document and all its chunks.
- */
 export function deleteDocument(docId, userId) {
   var db = getDb();
-  var doc = db.prepare('SELECT * FROM documents WHERE id = ? AND user_id = ?').get(docId, userId);
+  var doc = db.prepare('SELECT id FROM documents WHERE id = ? AND user_id = ?').get(docId, userId);
   if (!doc) throw new Error('文档不存在');
   db.prepare('DELETE FROM documents WHERE id = ?').run(docId);
   return { success: true };
 }
 
-// ============================================================
-// Internal helpers
-// ============================================================
-
 function detectFileType(filename, mimetype) {
+  if (typeof filename !== 'string' || typeof mimetype !== 'string') return null;
   var ext = filename.split('.').pop().toLowerCase();
-  if (ext === 'pdf') return 'pdf';
-  if (ext === 'txt' || ext === 'text') return 'txt';
-  if (ext === 'md' || ext === 'markdown') return 'md';
-  // Fallback to mimetype
-  if (mimetype && mimetype.includes('pdf')) return 'pdf';
-  if (mimetype && (mimetype.includes('text/plain') || mimetype.includes('text/markdown'))) return 'txt';
+  if (ext === 'pdf' && mimetype === 'application/pdf') return 'pdf';
+  if ((ext === 'txt' || ext === 'text') && mimetype === 'text/plain') return 'txt';
+  if ((ext === 'md' || ext === 'markdown') &&
+      (mimetype === 'text/markdown' || mimetype === 'text/x-markdown')) return 'md';
   return null;
 }
 
 function extractText(filePath, fileType) {
-  if (fileType === 'txt' || fileType === 'md') {
-    return readFileSync(filePath, 'utf-8');
-  }
-
-  if (fileType === 'pdf') {
-    return extractPdfText(filePath);
-  }
-
+  if (fileType === 'txt' || fileType === 'md') return readFileSync(filePath, 'utf-8');
+  if (fileType === 'pdf') return extractPdfText(filePath);
   return null;
 }
 
-/**
- * Simple PDF text extraction.
- * Parses raw PDF content — handles text-only PDFs.
- * For scanned/image PDFs, will return empty (OCR not supported yet).
+/*
+ * Intentionally NOT a general PDF parser or OCR. Supported subset only:
+ * one ASCII page, one unfiltered stream with a direct /Length, a standard
+ * Type1 Helvetica font named F1, and BT/ET, Tf, Td/TD/Tm/TL/T*, literal Tj
+ * operators. Hex strings, TJ arrays, nested/octal strings, custom encodings,
+ * compression, images, encryption and layout reconstruction are unsupported.
+ * Reject the entire file on unsupported syntax; never scrape raw PDF bytes.
  */
 function extractPdfText(filePath) {
-  try {
-    var buf = readFileSync(filePath);
-    var content = buf.toString('utf-8');
+  var unsupported = 'PDF 解析失败: 仅支持单页、未压缩、Helvetica 字体的基本 ASCII 文本 PDF（literal Tj）；不支持通用 PDF 或 OCR，请导出为 TXT/Markdown';
+  var content = readFileSync(filePath).toString('latin1');
+  if (!/^%PDF-1\.[0-7][\r\n]/.test(content) || !/%%EOF\s*$/.test(content) ||
+      /[^\x09\x0a\x0d\x20-\x7e]/.test(content) ||
+      /\/(?:Filter|Encrypt|Encoding|ToUnicode|XObject|ObjStm)\b/.test(content) ||
+      (content.match(/\/Type\s*\/Page\b/g) || []).length !== 1) throw new Error(unsupported);
 
-    // Try to find text between stream/endstream markers
-    // This is a basic approach — works for many text PDFs
-    var text = '';
+  // Deliberately require simple, explicit font and stream objects. A literal
+  // string in metadata, an image stream, or an unreferenced stream is not text.
+  var font = /(?:^|\n)(\d+) 0 obj\s*<<\s*\/Type\s*\/Font\s*\/Subtype\s*\/Type1\s*\/BaseFont\s*\/Helvetica\s*>>\s*endobj/.exec(content);
+  var streams = Array.from(content.matchAll(/(?:^|\n)(\d+) 0 obj\s*<<\s*\/Length\s+(\d+)\s*>>\s*stream\r?\n([\s\S]*?)\r?\nendstream\s*endobj/g));
+  if (!font || streams.length !== 1 || (content.match(/\bstream\r?\n/g) || []).length !== 1) throw new Error(unsupported);
+  var stream = streams[0];
+  var page = /(?:^|\n)\d+ 0 obj\s*(<<\s*\/Type\s*\/Page\b[\s\S]*?)endobj/.exec(content);
+  if (!page || !new RegExp('/Contents\\s+' + stream[1] + '\\s+0\\s+R\\b').test(page[1]) ||
+      !new RegExp('/Font\\s*<<\\s*/F1\\s+' + font[1] + '\\s+0\\s+R\\s*>>').test(page[1]) ||
+      Number(stream[2]) !== stream[3].length) throw new Error(unsupported);
 
-    // Remove binary data, extract readable text
-    // Find "BT" ... "ET" blocks (Begin Text / End Text in PDF)
-    var btRegex = /BT\s*([\s\S]*?)\s*ET/g;
-    var match;
-    while ((match = btRegex.exec(content)) !== null) {
-      var block = match[1];
-      // Extract text between parentheses: (Hello World)
-      var tRegex = /\(([^)]*)\)/g;
-      var tMatch;
-      while ((tMatch = tRegex.exec(block)) !== null) {
-        text += tMatch[1];
-      }
+  // Tokenize literal strings as a whole so words such as BT and ET inside
+  // actual text cannot accidentally become PDF operators.
+  var tokens = /\s+|\((?:\\[()\\nrt]|[^()\\\x00-\x1f\x7f-\xff])*\)|\/F1\b|[+-]?(?:\d+(?:\.\d*)?|\.\d+)|BT\b|ET\b|Tf\b|Td\b|TD\b|Tm\b|TL\b|T\*|Tj\b/gy;
+  var offset = 0, operands = [], inside = false, hasFont = false, text = '';
+  while (offset < stream[3].length) {
+    tokens.lastIndex = offset;
+    var match = tokens.exec(stream[3]);
+    if (!match) throw new Error(unsupported);
+    var token = match[0];
+    offset = tokens.lastIndex;
+    if (/^\s+$/.test(token)) continue;
+    if (token[0] === '(' || token[0] === '/' || /^[+\-.\d]/.test(token)) {
+      operands.push(token);
+      continue;
+    }
+    if (token === 'BT') {
+      if (inside || operands.length) throw new Error(unsupported);
+      inside = true;
+      hasFont = false;
+    } else if (token === 'ET') {
+      if (!inside || operands.length) throw new Error(unsupported);
+      inside = false;
       text += '\n';
-    }
-
-    // If BT/ET method found nothing, try raw content scraping
-    if (!text.trim()) {
-      // Try to find any readable ASCII strings
-      var parts = content.split(/[\x00-\x08\x0E-\x1F]/);
-      var readable = [];
-      for (var i = 0; i < parts.length; i++) {
-        var p = parts[i];
-        if (p.length > 10 && /^[\x20-\x7E一-鿿　-〿＀-￯\n\r\t]+/.test(p)) {
-          readable.push(p.replace(/[^\x20-\x7E一-鿿　-〿＀-￯\n\r\t]/g, ' '));
-        }
-      }
-      text = readable.join(' ');
-    }
-
-    // If still empty, try extracting stream contents
-    if (!text.trim()) {
-      var streamRegex = /stream\s*([\s\S]*?)\s*endstream/g;
-      var sMatch;
-      while ((sMatch = streamRegex.exec(content)) !== null) {
-        var sContent = sMatch[1];
-        // Try to decompress FlateDecode
-        // For now, extract readable portions
-        var readable2 = sContent.replace(/[^\x20-\x7E一-鿿　-〿＀-￯\n\r]/g, ' ');
-        if (readable2.trim().length > 20) {
-          text += readable2 + '\n';
-        }
-      }
-    }
-
-    return text.trim();
-  } catch (e) {
-    throw new Error('PDF 解析失败: ' + e.message);
-  }
-}
-
-function splitChunks(text) {
-  // First, try to split by double newlines (paragraphs)
-  var paragraphs = text.split(/\n\s*\n/);
-  var chunks = [];
-  var current = '';
-
-  for (var i = 0; i < paragraphs.length; i++) {
-    var p = paragraphs[i].trim();
-    if (!p) continue;
-
-    if (current.length + p.length < MAX_CHUNK_SIZE) {
-      current += (current ? '\n\n' : '') + p;
     } else {
-      // Current chunk is full, save it
-      if (current) {
-        chunks.push(current.trim());
-        // Keep overlap
-        var words = current.split('');
-        current = words.slice(-CHUNK_OVERLAP).join('');
-      }
-
-      // If the paragraph itself is longer than MAX_CHUNK_SIZE, split by sentences
-      if (p.length > MAX_CHUNK_SIZE) {
-        var subChunks = splitLongText(p);
-        for (var j = 0; j < subChunks.length; j++) {
-          chunks.push(subChunks[j]);
-        }
-        current = '';
+      if (!inside) throw new Error(unsupported);
+      if (token === 'Tf') {
+        if (operands.length !== 2 || operands[0] !== '/F1' || !Number.isFinite(Number(operands[1]))) throw new Error(unsupported);
+        hasFont = true;
+      } else if (token === 'Tj') {
+        if (!hasFont || operands.length !== 1 || operands[0][0] !== '(') throw new Error(unsupported);
+        text += operands[0].slice(1, -1).replace(/\\([()\\nrt])/g, function (_, escaped) {
+          return { n: '\n', r: '\r', t: '\t' }[escaped] || escaped;
+        });
       } else {
-        current = p;
+        var counts = { Td: 2, TD: 2, Tm: 6, TL: 1, 'T*': 0 };
+        if (operands.length !== counts[token] || operands.some(function (value) { return !Number.isFinite(Number(value)); })) throw new Error(unsupported);
+        if (token !== 'TL') text += '\n';
       }
+      operands = [];
     }
   }
-
-  if (current.trim()) chunks.push(current.trim());
-
-  // Filter out very short chunks
-  return chunks.filter(function (c) { return c.length >= 20; });
-}
-
-function splitLongText(text) {
-  var chunks = [];
-  // Split by sentence boundary
-  var sentences = text.split(/(?<=[。！？.!?])\s*/);
-  var current = '';
-
-  for (var i = 0; i < sentences.length; i++) {
-    var s = sentences[i].trim();
-    if (!s) continue;
-
-    if (current.length + s.length < MAX_CHUNK_SIZE) {
-      current += s;
-    } else {
-      if (current) {
-        chunks.push(current.trim());
-        current = s;
-      } else {
-        // Single sentence is too long, force split
-        for (var j = 0; j < s.length; j += MAX_CHUNK_SIZE) {
-          chunks.push(s.slice(j, j + MAX_CHUNK_SIZE));
-        }
-      }
-    }
-  }
-
-  if (current.trim()) chunks.push(current.trim());
-  return chunks;
+  if (inside || operands.length || !text.trim()) throw new Error(unsupported);
+  return text.trim();
 }

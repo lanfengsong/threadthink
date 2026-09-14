@@ -24,82 +24,92 @@ export async function handleSend() {
   var text = dom.userInput.value.trim();
   if (!text || isStreaming()) return;
 
-  var convId = getCurrentConversationId();
+  // Acquire the lock before auto-creating a conversation. This prevents two
+  // rapid sends from creating two conversations while the first request waits.
+  setStreaming(true);
+  dom.btnSend.disabled = true;
 
-  // Auto-create conversation if none selected
-  if (!convId) {
-    try {
+  var convId = getCurrentConversationId();
+  var aMsg = null;
+
+  try {
+    // Auto-create conversation if none selected
+    if (!convId) {
       var conv = await createConversation(text.slice(0, 40));
       convId = conv.id;
       setCurrentConversation(convId);
       addConversation(conv);
       await refreshConversationList();
-    } catch (e) { showToast(e.message, true); return; }
-  }
+    }
 
-  dom.userInput.value = ''; dom.userInput.style.height = 'auto';
-  dom.btnSend.disabled = true; setStreaming(true);
+    dom.userInput.value = ''; dom.userInput.style.height = 'auto';
 
-  var messages = getMessages();
-  var uMsg = { id: genId(), role: 'user', content: text, annotations: [] };
-  var aMsg = { id: genId(), role: 'assistant', content: '', annotations: [], _loading: true };
-  addMessage(uMsg);
-  addMessage(aMsg);
+    var uMsg = { id: genId(), role: 'user', content: text, annotations: [] };
+    aMsg = { id: genId(), role: 'assistant', content: '', annotations: [], _loading: true };
+    addMessage(uMsg);
+    addMessage(aMsg);
 
-  dom.conversation.appendChild(renderMessage(uMsg));
-  dom.conversation.appendChild(renderMessage(aMsg));
-  dom.welcome.style.display = 'none';
-  syncSidebarHeights();
-  rebuildSidebar('left'); rebuildSidebar('right');
-  scrollToBottom(dom.workspace);
+    dom.conversation.appendChild(renderMessage(uMsg));
+    dom.conversation.appendChild(renderMessage(aMsg));
+    dom.welcome.style.display = 'none';
+    syncSidebarHeights();
+    rebuildSidebar('left'); rebuildSidebar('right');
+    scrollToBottom(dom.workspace);
 
-  var bodyEl = dom.conversation.querySelector('[data-msg-id="' + aMsg.id + '"] .message-body');
+    var bodyEl = dom.conversation.querySelector('[data-msg-id="' + aMsg.id + '"] .message-body');
 
-  createChatStream(convId, text, {
-    onToken: function (token) {
-      aMsg.content += token;
-      if (bodyEl) bodyEl.innerHTML = renderMarkdown(aMsg.content);
-      syncSidebarHeights();
-      autoScrollIfAllowed(dom.workspace);
-    },
-    onToolStart: function (ts) {
-      if (bodyEl) {
-        var toolDiv = document.createElement('div');
-        toolDiv.className = 'tool-call';
-        toolDiv.dataset.toolName = ts.tool_name;
-        toolDiv.innerHTML = '<div class="tool-call-header">🔧 正在调用: <strong>' + ts.tool_name + '</strong>…</div>';
-        bodyEl.appendChild(toolDiv);
-      }
-    },
-    onToolEnd: function (te) {
-      if (bodyEl) {
-        var toolEl = bodyEl.querySelector('.tool-call[data-tool-name="' + te.tool_name + '"]:last-child');
-        if (toolEl) {
-          var resultPreview = typeof te.result === 'string' ? te.result.slice(0, 200) : JSON.stringify(te.result).slice(0, 200);
-          toolEl.innerHTML =
-            '<details class="tool-call-details">' +
-              '<summary>🔧 ' + te.tool_name + ' ✓</summary>' +
-              '<pre>' + escapeHTML(resultPreview) + '</pre>' +
-            '</details>';
+    await createChatStream(convId, text, {
+      onToken: function (token) {
+        aMsg.content += token;
+        if (bodyEl) bodyEl.innerHTML = renderMarkdown(aMsg.content);
+        syncSidebarHeights();
+        autoScrollIfAllowed(dom.workspace);
+      },
+      onToolStart: function (ts) {
+        if (bodyEl) {
+          var toolDiv = document.createElement('div');
+          toolDiv.className = 'tool-call';
+          toolDiv.dataset.toolName = ts.tool_name;
+          toolDiv.innerHTML = '<div class="tool-call-header">🔧 正在调用: <strong>' + ts.tool_name + '</strong>…</div>';
+          bodyEl.appendChild(toolDiv);
         }
-      }
-    },
-    onDone: function () {
+      },
+      onToolEnd: function (te) {
+        if (bodyEl) {
+          var toolEl = bodyEl.querySelector('.tool-call[data-tool-name="' + te.tool_name + '"]:last-child');
+          if (toolEl) {
+            var resultPreview = typeof te.result === 'string' ? te.result.slice(0, 200) : JSON.stringify(te.result).slice(0, 200);
+            toolEl.innerHTML =
+              '<details class="tool-call-details">' +
+                '<summary>🔧 ' + te.tool_name + ' ✓</summary>' +
+                '<pre>' + escapeHTML(resultPreview) + '</pre>' +
+              '</details>';
+          }
+        }
+      },
+      onDone: function () {
+        aMsg._loading = false;
+        refreshMessage(aMsg.id);
+        autoScrollIfAllowed(dom.workspace);
+      },
+      onError: function (err) {
+        aMsg._loading = false; aMsg.content += '\n\n❌ ' + err.message;
+        refreshMessage(aMsg.id);
+        showToast(err.message, true);
+      },
+    });
+  } catch (e) {
+    if (aMsg) {
       aMsg._loading = false;
+      aMsg.content += '\n\n❌ ' + e.message;
       refreshMessage(aMsg.id);
-      autoScrollIfAllowed(dom.workspace);
-      setStreaming(false);
-      dom.btnSend.disabled = false;
-      dom.userInput.focus();
-    },
-    onError: function (err) {
-      aMsg._loading = false; aMsg.content += '\n\n❌ ' + err.message;
-      refreshMessage(aMsg.id);
-      showToast(err.message, true);
-      setStreaming(false);
-      dom.btnSend.disabled = false;
-    },
-  });
+    }
+    showToast(e.message, true);
+  } finally {
+    setStreaming(false);
+    dom.btnSend.disabled = false;
+    dom.userInput.focus();
+  }
 }
 
 // ---- Annotation (unchanged core logic) ----
@@ -153,10 +163,10 @@ export function handleAnnotateClick() {
 
   createChatStream(convId, '在你之前的回答中提到了这段话：\n\n"' + st + '"\n\n追问：' + q + '\n\n请用一句话简洁回答，不要展开。', {
     onToken: function (ft) {
-      ann.answer = ft;
-      if (answerEl) answerEl.textContent = ft;
+      ann.answer += ft;
+      if (answerEl) answerEl.textContent = ann.answer;
       var pinEl = document.querySelector('.pinned-card [data-ann-content="' + ann.id + '"]');
-      if (pinEl) pinEl.textContent = ft;
+      if (pinEl) pinEl.textContent = ann.answer;
     },
     onToolStart: function () {},
     onToolEnd: function () {},
@@ -171,6 +181,11 @@ export function handleAnnotateClick() {
       ann._loading = false; ann.answer = '❌ ' + err.message;
       if (answerEl) answerEl.textContent = ann.answer;
     },
+  }).catch(function (err) {
+    ann._loading = false;
+    ann.answer = '❌ ' + err.message;
+    if (answerEl) answerEl.textContent = ann.answer;
+    showToast(err.message, true);
   });
 }
 

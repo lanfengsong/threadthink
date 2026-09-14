@@ -1,5 +1,9 @@
 /* ============================================================
    ThreadThink Server — Tool Registry
+   ============================================================
+
+   Tool execution receives request-scoped context explicitly. Do not use
+   module-level user state: concurrent chat requests must remain isolated.
    ============================================================ */
 
 import { webSearchTool } from './web-search.js';
@@ -13,22 +17,13 @@ export function registerTool(name, definition, execute) {
   _tools[name] = { definition: definition, execute: execute };
 }
 
-// Register built-in tools
 registerTool('web_search', webSearchTool.definition, webSearchTool.execute);
 registerTool('fetch_url', fetchUrlTool.definition, fetchUrlTool.execute);
 registerTool('calculator', calculatorTool.definition, calculatorTool.execute);
-registerTool('doc_search', docSearchTool.definition, function (args) {
-  return docSearchTool.execute(args, _userId);
+registerTool('doc_search', docSearchTool.definition, function (args, context) {
+  return docSearchTool.execute(args, context && context.userId);
 });
 
-var _userId = null;
-
-/** Set the current user ID for tool execution context */
-export function setToolUserId(userId) {
-  _userId = userId;
-}
-
-/** Get tool definitions in OpenAI format */
 export function getToolDefinitions() {
   var defs = [];
   for (var name in _tools) {
@@ -37,12 +32,11 @@ export function getToolDefinitions() {
   return defs;
 }
 
-/** Execute a tool by name and return its result */
-export async function executeTool(name, args) {
+export async function executeTool(name, args, context) {
   var tool = _tools[name];
   if (!tool) return { error: '未知工具: ' + name };
   try {
-    var result = await tool.execute(args);
+    var result = await tool.execute(args || {}, context || {});
     return result;
   } catch (e) {
     return { error: '工具执行异常: ' + e.message };
