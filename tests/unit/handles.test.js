@@ -17,10 +17,10 @@ var api = vi.hoisted(function () {
 
 vi.mock('../../src/api.js', function () { return api; });
 
-import { handleAnnotateClick, handleSend } from '../../src/handles.js';
+import { handleAnnotateClick, handleSend, switchConversation } from '../../src/handles.js';
 import { resetDom } from '../../src/dom.js';
 import {
-  clearAllCards, clearMessages, isStreaming, setConversations, setCurrentConversation, setMessages, setStreaming,
+  clearAllCards, clearMessages, getMessages, isStreaming, setConversations, setCurrentConversation, setMessages, setStreaming,
 } from '../../src/state.js';
 
 function mountDom() {
@@ -170,3 +170,34 @@ describe('handleAnnotateClick', function () {
   });
 });
 
+
+describe('switchConversation（批注加载与树组装）', function () {
+  it('按 parent_id 组装批注树：根批注携带子批注', async function () {
+    mountDom();
+    api.fetchMessages.mockResolvedValue([
+      { id: 'm1', role: 'assistant', content: '内容', annotations: '[]' },
+    ]);
+    api.fetchAnnotations.mockResolvedValue({ annotations: [
+      { id: 'root', message_id: 'm1', question: '根', answer: '', selected_text: '内容', block_id: 'b1', start_offset: 0, end_offset: 2, text_hash: 'h', raw_context: '' },
+      { id: 'child', message_id: 'm1', question: '子', answer: '', selected_text: '', parent_id: 'root' },
+    ]});
+    await switchConversation('c1');
+    var messages = getMessages();
+    expect(messages.length).toBe(1);
+    expect(messages[0].annotations.length).toBe(1);
+    expect(messages[0].annotations[0].id).toBe('root');
+    expect(messages[0].annotations[0].blockId).toBe('b1');
+    expect(messages[0].annotations[0].annotations.length).toBe(1);
+    expect(messages[0].annotations[0].annotations[0].id).toBe('child');
+  });
+
+  it('批注加载失败不阻塞对话加载', async function () {
+    mountDom();
+    api.fetchMessages.mockResolvedValue([{ id: 'm1', role: 'assistant', content: '内容', annotations: '[]' }]);
+    api.fetchAnnotations.mockRejectedValue(new Error('down'));
+    await switchConversation('c1');
+    var messages = getMessages();
+    expect(messages.length).toBe(1);
+    expect(messages[0].annotations).toEqual([]);
+  });
+});

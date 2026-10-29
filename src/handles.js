@@ -11,7 +11,8 @@ import {
 import { getColor } from './palette.js';
 import { genId, showToast, scrollToBottom, autoScrollIfAllowed } from './utils.js';
 import { renderMarkdown } from './markdown.js';
-import { renderMessage, refreshMessage, renderConversation } from './renderer.js';
+import { renderMarkdown } from './markdown.js';
+import { renderMessage, refreshMessage, renderConversation, updateStreamingBody } from './renderer.js';
 import { syncSidebarHeights, rebuildSidebar } from './sidebar.js';
 import { createFloatingCard } from './cards.js';
 import { createChatStream, createConversation, createAnnotation, fetchMessages, fetchConversations, fetchAnnotations } from './api.js';
@@ -61,7 +62,8 @@ export async function handleSend() {
     await createChatStream(convId, text, {
       onToken: function (token) {
         aMsg.content += token;
-        if (bodyEl) bodyEl.innerHTML = renderMarkdown(aMsg.content);
+        // 增量渲染：只重建变化的尾部块，前面已渲染的块（含批注高亮）原样保留
+        if (bodyEl) updateStreamingBody(bodyEl, aMsg.content);
         syncSidebarHeights();
         autoScrollIfAllowed(dom.workspace);
       },
@@ -232,10 +234,10 @@ export async function switchConversation(convId) {
     ]);
     var byMessage = {};
     (annData.annotations || []).forEach(function (a) {
-      (byMessage[a.message_id] = byMessage[a.message_id] || []).push(a);
+      (byMessage[a.message_id] = byMessage[a.message_id] || []).push(fromStoredAnnotation(a));
     });
     var mapped = msgs.map(function (m) {
-      var table = (byMessage[m.id] || []).map(fromStoredAnnotation);
+      var table = assembleAnnoTree(byMessage[m.id] || []);
       var legacy = JSON.parse(m.annotations || '[]'); // 历史 JSON 字段（兼容；新数据走表）
       return { id: m.id, role: m.role, content: m.content, annotations: table.concat(legacy), _loading: false };
     });
@@ -253,7 +255,7 @@ function fromStoredAnnotation(a) {
     selectedText: a.selected_text || '',
     question: a.question,
     answer: a.answer || '',
-    annotations: [],          // 子批注暂不组装（parent_id 在表内）
+    annotations: [],          // 子批注（由 assembleAnnoTree 按 parent_id 组装）
     _loading: false,
     colorIdx: a.id ? (parseInt(hashText(a.id), 16) % 6) : 0, // 稳定颜色（按 id 哈希）
     rawContext: a.raw_context || '',
@@ -261,7 +263,20 @@ function fromStoredAnnotation(a) {
     startOffset: a.start_offset == null ? null : a.start_offset,
     endOffset: a.end_offset == null ? null : a.end_offset,
     textHash: a.text_hash || null,
+    parentId: a.parent_id || null,
   };
+}
+
+/** 按 parent_id 把批注列表组织成树（根批注 + 嵌套子批注）。 */
+function assembleAnnoTree(list) {
+  var byId = {};
+  list.forEach(function (a) { byId[a.id] = a; });
+  var roots = [];
+  list.forEach(function (a) {
+    if (a.parentId && byId[a.parentId]) byId[a.parentId].annotations.push(a);
+    else roots.push(a);
+  });
+  return roots;
 }
 
 export async function refreshConversationList() {

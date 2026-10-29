@@ -3,10 +3,11 @@
    ============================================================ */
 
 import { describe, it, expect } from 'vitest';
-import { renderAnnotatedContent, renderMessage } from '../../src/renderer.js';
+import { renderAnnotatedContent, renderMessage, updateStreamingBody } from '../../src/renderer.js';
 import { parseBlocks } from '../../src/blocks.js';
 import { hashText } from '../../src/annotations.js';
 import { stripMarkdown } from '../../src/text.js';
+import { renderMarkdown } from '../../src/markdown.js';
 
 function makeAnn(id, selectedText, rawContext) {
   return {
@@ -140,5 +141,38 @@ describe('renderMessage 重渲染恢复', function () {
     expect(first.querySelector('.annotated-text').textContent).toBe('一段引用');
     expect(second.querySelector('.annotated-text').textContent).toBe('一段引用');
     expect(second.querySelector('.message-body').textContent).toContain('完整回答内容');
+  });
+});
+describe('updateStreamingBody（流式增量渲染）', function () {
+  it('前缀块 DOM 引用不变，仅更新尾部块（不重建已渲染内容）', function () {
+    var body = document.createElement('div');
+    body.innerHTML = renderMarkdown('第一段完整内容。');
+    var firstBlock = body.children[0];
+
+    updateStreamingBody(body, '第一段完整内容。'); // 无变化
+    expect(body.children[0]).toBe(firstBlock);
+
+    updateStreamingBody(body, '第一段完整内容。\n\n第二段正在生成'); // 新增第二块
+    expect(body.children[0]).toBe(firstBlock);
+    expect(body.children.length).toBe(2);
+    expect(body.textContent).toBe('第一段完整内容。第二段正在生成');
+  });
+
+  it('流式期间已挂载的批注高亮（mark）在后续 token 中保留', function () {
+    var body = document.createElement('div');
+    body.innerHTML = renderMarkdown('第一段内容。\n\n');
+    var block1 = body.children[0];
+    // 模拟用户批注：第一块内挂 mark（批注高亮）
+    var textNode = block1.firstChild;
+    block1.textContent = '';
+    var mark = document.createElement('mark');
+    mark.className = 'annotated-text'; mark.dataset.annId = 'a1';
+    mark.appendChild(textNode);
+    block1.appendChild(mark);
+
+    updateStreamingBody(body, '第一段内容。\n\n第二段追加中。');
+    expect(body.children[0].querySelector('.annotated-text')).not.toBeNull(); // 高亮保留
+    expect(body.children[0].querySelector('.annotated-text').dataset.annId).toBe('a1');
+    expect(body.children.length).toBe(2);
   });
 });

@@ -5,7 +5,8 @@
 import { getDom } from './dom.js';
 import { getMessages } from './state.js';
 import { getColor } from './palette.js';
-import { renderMarkdown, stripMarkdown } from './markdown.js';
+import { renderMarkdown, renderBlocks, stripMarkdown } from './markdown.js';
+import { parseBlocks } from './blocks.js';
 import { hashText } from './annotations.js';
 import { syncSidebarHeights, rebuildSidebar } from './sidebar.js';
 import { scrollToBottom } from './utils.js';
@@ -64,7 +65,31 @@ export function renderAnnotatedContent(msg) {
 }
 
 /**
- * 锚定位（design 4.2 解析链第一级）：
+ * 流式增量更新（design 4.4 阶段 3）：只重建内容变化的尾部块。
+ * 已匹配的块（data-block-id 相同）保持原 DOM 引用——流式期间
+ * 挂在这些块上的批注高亮（mark）不会因 innerHTML 重建而丢失。
+ */
+export function updateStreamingBody(bodyEl, content) {
+  var blocks = parseBlocks(content);
+  var children = bodyEl.children;
+  var matched = 0;
+  while (matched < blocks.length && matched < children.length &&
+         children[matched].getAttribute('data-block-id') === blocks[matched].id) matched++;
+  if (matched === blocks.length && children.length === blocks.length) return; // 无变化
+  while (bodyEl.children.length > matched) bodyEl.removeChild(bodyEl.lastChild);
+  if (matched < blocks.length) bodyEl.appendChild(renderBlocksToFragment(blocks.slice(matched)));
+}
+
+function renderBlocksToFragment(blocks) {
+  var tmp = document.createElement('div');
+  tmp.innerHTML = renderBlocks(blocks);
+  var frag = document.createDocumentFragment();
+  while (tmp.firstChild) frag.appendChild(tmp.firstChild);
+  return frag;
+}
+
+/**
+ * 按 (blockId, start, end) 定位（design 4.2 解析链第一级）。
  * 按 (blockId, start, end) 找到块元素，校验文本指纹一致后返回全局偏移；
  * 任何一步不符（块丢失/越界/指纹不一致）→ null（调用方走引文回退）。
  */
