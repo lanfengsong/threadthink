@@ -37,6 +37,28 @@ export async function deleteConversation(id) {
   if (!resp.ok) throw new Error('删除失败');
 }
 
+/** Persist a new annotation (block anchor + quote + question). */
+export async function createAnnotation(data) {
+  var resp = await fetch(BASE + '/annotations', {
+    method: 'POST', headers: authHeaders(), body: JSON.stringify(data),
+  });
+  handleAuthError(resp);
+  if (!resp.ok) {
+    var error;
+    try { error = (await resp.json()).error; } catch (e) { /* keep default */ }
+    throw new Error(error || '创建批注失败');
+  }
+  return (await resp.json()).annotation;
+}
+
+/** Fetch all persisted annotations for a conversation (for re-render). */
+export async function fetchAnnotations(conversationId) {
+  var resp = await fetch(BASE + '/annotations?conversationId=' + encodeURIComponent(conversationId), { headers: authHeaders() });
+  handleAuthError(resp);
+  if (!resp.ok) throw new Error('获取批注失败');
+  return await resp.json();
+}
+
 export async function fetchMessages(conversationId) {
   var resp = await fetch(BASE + '/conversations/' + conversationId + '/messages', { headers: authHeaders() });
   handleAuthError(resp);

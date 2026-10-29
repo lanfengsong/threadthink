@@ -14,8 +14,8 @@ import { renderMarkdown } from './markdown.js';
 import { renderMessage, refreshMessage, renderConversation } from './renderer.js';
 import { syncSidebarHeights, rebuildSidebar } from './sidebar.js';
 import { createFloatingCard } from './cards.js';
-import { createChatStream, createConversation, fetchMessages, fetchConversations } from './api.js';
-import { buildAnnotationContext } from './annotations.js';
+import { createChatStream, createConversation, createAnnotation, fetchMessages, fetchConversations, fetchAnnotations } from './api.js';
+import { buildAnnotationContext, selectionToAnchor, hashText } from './annotations.js';
 
 // ---- Chat Send (backend version) ----
 
@@ -132,6 +132,11 @@ export function handleAnnotateClick() {
 
   if (!msg.annotations) msg.annotations = [];
 
+  // Block anchor (design 4.2): a selection fully inside one block maps to
+  // (blockId, start, end) + text hash. Cross-block selections return null
+  // and fall back to quote matching (rawContext) on restore.
+  var anchor = selectionToAnchor(range);
+
   var rawContent = msg.content;
   var firstIdx = rawContent.indexOf(st);
   var ctxStart = Math.max(0, firstIdx - 25);
@@ -139,8 +144,27 @@ export function handleAnnotateClick() {
   var rawContext = rawContent.slice(ctxStart, ctxEnd);
 
   var ci = msg.annotations.length, color = getColor(ci);
-  var ann = { id: genId(), selectedText: st, question: q, answer: '', annotations: [], _loading: true, colorIdx: ci, rawContext: rawContext };
+  var ann = {
+    id: genId(), selectedText: st, question: q, answer: '', annotations: [],
+    _loading: true, colorIdx: ci, rawContext: rawContext,
+    blockId: anchor ? anchor.blockId : null,
+    startOffset: anchor ? anchor.start : null,
+    endOffset: anchor ? anchor.end : null,
+    textHash: anchor ? anchor.textHash : null,
+  };
   msg.annotations.push(ann);
+
+  // Persist the anchor + question; keep the interactive flow even when the
+  // save fails (toast surfaces it) — the annotation still works in-memory.
+  createAnnotation({
+    messageId: msgId, blockId: ann.blockId, startOffset: ann.startOffset,
+    endOffset: ann.endOffset, selectedText: st, textHash: ann.textHash,
+    rawContext: rawContext, question: q,
+  }).then(function (saved) {
+    if (saved && saved.id) ann.id = saved.id;
+  }).catch(function (err) {
+    showToast('批注保存失败: ' + err.message, true);
+  });
 
   // Direct DOM highlight
   var mark = document.createElement('mark'); mark.className = 'annotated-text'; mark.dataset.annId = ann.id;
@@ -202,15 +226,42 @@ export async function switchConversation(convId) {
   clearAllMessages();
 
   try {
-    var msgs = await fetchMessages(convId);
+    var [msgs, annData] = await Promise.all([
+      fetchMessages(convId),
+      fetchAnnotations(convId).catch(function () { return { annotations: [] }; }), // 批注加载失败不阻塞对话
+    ]);
+    var byMessage = {};
+    (annData.annotations || []).forEach(function (a) {
+      (byMessage[a.message_id] = byMessage[a.message_id] || []).push(a);
+    });
     var mapped = msgs.map(function (m) {
-      return { id: m.id, role: m.role, content: m.content, annotations: JSON.parse(m.annotations || '[]'), _loading: false };
+      var table = (byMessage[m.id] || []).map(fromStoredAnnotation);
+      var legacy = JSON.parse(m.annotations || '[]'); // 历史 JSON 字段（兼容；新数据走表）
+      return { id: m.id, role: m.role, content: m.content, annotations: table.concat(legacy), _loading: false };
     });
     setMessages(mapped);
     renderConversation();
   } catch (e) {
     showToast('加载对话失败: ' + e.message, true);
   }
+}
+
+/** 服务端 annotations 表行 → 前端批注对象（含锚字段，供恢复定位）。 */
+function fromStoredAnnotation(a) {
+  return {
+    id: a.id,
+    selectedText: a.selected_text || '',
+    question: a.question,
+    answer: a.answer || '',
+    annotations: [],          // 子批注暂不组装（parent_id 在表内）
+    _loading: false,
+    colorIdx: a.id ? (parseInt(hashText(a.id), 16) % 6) : 0, // 稳定颜色（按 id 哈希）
+    rawContext: a.raw_context || '',
+    blockId: a.block_id || null,
+    startOffset: a.start_offset == null ? null : a.start_offset,
+    endOffset: a.end_offset == null ? null : a.end_offset,
+    textHash: a.text_hash || null,
+  };
 }
 
 export async function refreshConversationList() {

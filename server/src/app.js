@@ -13,6 +13,7 @@ import { chatRoutes } from './routes/chat.routes.js';
 import { conversationsRoutes } from './routes/conversations.routes.js';
 import { settingsRoutes } from './routes/settings.routes.js';
 import { documentsRoutes } from './routes/documents.routes.js';
+import { annotationRoutes } from './routes/annotations.routes.js';
 
 export async function buildApp(options) {
   var opts = options || {};
@@ -59,6 +60,7 @@ export async function buildApp(options) {
   fastify.register(conversationsRoutes, { requireAuth });
   fastify.register(settingsRoutes, { requireAuth });
   fastify.register(documentsRoutes, { requireAuth });
+  fastify.register(annotationRoutes, { requireAuth });
 
   getDb();
   await fastify.ready();

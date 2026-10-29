@@ -16,12 +16,15 @@ var { searchDocuments } = await import('../src/services/document.service.js');
 var { executeTool } = await import('../src/services/tools/index.js');
 var app;
 var userNumber = 0;
+var embeddingInputs = [];
 
 before(async function () { app = await buildApp({ logger: false }); });
 beforeEach(function () {
   getDb().exec('DELETE FROM tool_calls; DELETE FROM messages; DELETE FROM conversations; DELETE FROM chunks; DELETE FROM documents; DELETE FROM user_settings; DELETE FROM users;');
+  embeddingInputs = [];
   globalThis.fetch = async function (url, options) {
     var body = JSON.parse(options.body);
+    embeddingInputs.push(body.input);
     return new Response(JSON.stringify({ data: body.input.map(function (_, i) { return { index: i, embedding: [1, i + 1] }; }) }), { status: 200 });
   };
 });
@@ -56,14 +59,61 @@ async function upload(token, filename, mimetype, content) {
 
 var text = 'This document contains enough plain text to produce one useful searchable chunk.';
 
-test('uploads TXT and Markdown offline and removes temporary files', async function () {
+test('uploads TXT and Markdown offline, stores chunk metadata, and removes temporary files', async function () {
   var auth = await register(true);
   var txt = await upload(auth.token, 'notes.txt', 'text/plain', text);
   var md = await upload(auth.token, 'notes.md', 'text/markdown', '# Notes\n\n' + text);
   assert.equal(txt.statusCode, 201);
   assert.equal(md.statusCode, 201);
   assert.equal(getDb().prepare('SELECT COUNT(*) AS n FROM documents').get().n, 2);
+
+  // The embedding call carried the heading-path-augmented text for Markdown,
+  // and the bare chunk for plain text.
+  assert.deepEqual(embeddingInputs[0], [text]);
+  assert.deepEqual(embeddingInputs[1], ['Notes\n' + text]);
+
+  var txtChunks = getDb().prepare('SELECT content, section_path, embedding_text, paragraph_index, is_overflow_split FROM chunks c JOIN documents d ON c.document_id = d.id WHERE d.filename = ? ORDER BY c.chunk_index').all('notes.txt');
+  assert.equal(txtChunks.length, 1);
+  assert.equal(txtChunks[0].content, text);
+  assert.equal(txtChunks[0].section_path, null);
+  assert.equal(txtChunks[0].embedding_text, text);
+  assert.equal(txtChunks[0].paragraph_index, 0);
+  assert.equal(txtChunks[0].is_overflow_split, 0);
+
+  var mdChunks = getDb().prepare('SELECT content, section_path, embedding_text, paragraph_index, is_overflow_split FROM chunks c JOIN documents d ON c.document_id = d.id WHERE d.filename = ? ORDER BY c.chunk_index').all('notes.md');
+  assert.equal(mdChunks.length, 1);
+  assert.equal(mdChunks[0].content, text);
+  assert.equal(mdChunks[0].section_path, 'Notes');
+  assert.equal(mdChunks[0].embedding_text, 'Notes\n' + text);
   assert.equal(readdirSync(process.env.UPLOAD_DIR).length, 0);
+});
+
+test('paragraph-level chunking stores overflow flags and search returns metadata', async function () {
+  var auth = await register(true);
+  var sentence = '超长段落用于验证句子边界二次切分与局部重叠。';
+  var body = '第一段内容足够长，用于验证自然段独立分块。\n\n第二段内容同样足够长，不会被合并。\n\n' + sentence.repeat(50);
+  var uploaded = await upload(auth.token, 'chunks.txt', 'text/plain', body);
+  assert.equal(uploaded.statusCode, 201);
+
+  var rows = getDb().prepare('SELECT chunk_index, content, section_path, embedding_text, paragraph_index, is_overflow_split FROM chunks c JOIN documents d ON c.document_id = d.id WHERE d.filename = ? ORDER BY c.chunk_index').all('chunks.txt');
+  assert.equal(rows.length, 4); // two short paragraphs + two overflow pieces
+  assert.deepEqual(rows.map(function (r) { return r.paragraph_index; }), [0, 1, 2, 2]);
+  assert.deepEqual(rows.map(function (r) { return r.is_overflow_split; }), [0, 0, 1, 1]);
+  // Only sub-chunks of the same overlong paragraph overlap.
+  assert.equal(rows[2].content.length, 990);
+  assert.equal(rows[3].content.startsWith(rows[2].content.slice(-100)), true);
+  assert.equal(rows[3].content.length, 210);
+  for (var i = 0; i < rows.length; i++) {
+    assert.equal(rows[i].section_path, null);
+    assert.equal(rows[i].embedding_text, rows[i].content);
+  }
+
+  var results = await searchDocuments(auth.user.id, '查询');
+  assert.equal(results.length, 4);
+  assert.equal(results[0].content, rows[0].content);
+  assert.equal(results[0].section_path, '');
+  assert.equal(results[0].paragraph_index, 0);
+  assert.ok(results.some(function (r) { return r.is_overflow_split === true; }));
 });
 
 test('rejects extension, MIME, empty, size, and traversal input without database or temp artifacts', async function () {
@@ -102,6 +152,7 @@ test('search returns the five highest scores in descending order and deletes wit
   var alice = await register(true);
   var bob = await register(true);
   var inserted = getDb().prepare('INSERT INTO documents (id,user_id,filename,file_type,file_size,chunk_count) VALUES (?,?,?,?,?,?)');
+  // Old-shape rows (no metadata columns) must keep working after migration.
   var chunk = getDb().prepare('INSERT INTO chunks (id,document_id,chunk_index,content,embedding) VALUES (?,?,?,?,?)');
   var docs = [];
   for (var i = 0; i < 6; i++) {
@@ -118,6 +169,8 @@ test('search returns the five highest scores in descending order and deletes wit
   var results = await searchDocuments(aliceId, 'query');
   assert.equal(results.length, 5);
   assert.deepEqual(results.map(function (r) { return r.content; }), ['content 5 with enough words', 'content 4 with enough words', 'content 3 with enough words', 'content 2 with enough words', 'content 1 with enough words']);
+  // Pre-metadata rows surface an empty section path instead of failing.
+  assert.ok(results.every(function (r) { return r.section_path === ''; }));
 
   var ownedDoc = docs[0];
   var forbidden = await app.inject({ method: 'DELETE', url: '/api/documents/' + ownedDoc, headers: { authorization: 'Bearer ' + bob.token } });
@@ -161,4 +214,25 @@ test('doc_search keeps concurrent user context isolated', async function () {
   var results = await Promise.all([executeTool('doc_search', { query: 'A' }, { userId: a.id }), executeTool('doc_search', { query: 'B' }, { userId: b.id })]);
   assert.equal(results[0].results[0].filename, 'alice.txt');
   assert.equal(results[1].results[0].filename, 'bob.txt');
+});
+
+test('doc_search returns at most five independent chunks without adjacent-paragraph expansion', async function () {
+  var auth = await register(true);
+  var inserted = getDb().prepare('INSERT INTO documents (id,user_id,filename,file_type,chunk_count) VALUES (?,?,?,?,?)');
+  inserted.run('tool-doc', auth.user.id, 'tool.txt', 'txt', 6);
+  var chunk = getDb().prepare('INSERT INTO chunks (id,document_id,chunk_index,content,embedding,section_path,paragraph_index,is_overflow_split) VALUES (?,?,?,?,?,?,?,?)');
+  var contents = [];
+  for (var i = 0; i < 6; i++) {
+    contents.push('solo paragraph ' + i);
+    chunk.run('tool-chunk-' + i, 'tool-doc', i, 'solo paragraph ' + i, JSON.stringify([i + 1, 1]), null, i, 0);
+  }
+  globalThis.fetch = async function () {
+    return new Response(JSON.stringify({ data: [{ index: 0, embedding: [1, 0] }] }), { status: 200 });
+  };
+  var result = await executeTool('doc_search', { query: 'find' }, { userId: auth.user.id });
+  assert.equal(result.results.length, 5);
+  // Every result is exactly one stored chunk: no neighbor concatenation.
+  assert.ok(result.results.every(function (r) { return contents.indexOf(r.content) !== -1; }));
+  assert.equal(result.results.some(function (r) { return r.content === 'solo paragraph 0'; }), false);
+  assert.ok(result.results.every(function (r) { return r.section_path === ''; }));
 });

@@ -8,6 +8,8 @@ var api = vi.hoisted(function () {
   return {
     createChatStream: vi.fn(),
     createConversation: vi.fn(),
+    createAnnotation: vi.fn(),
+    fetchAnnotations: vi.fn(),
     fetchConversations: vi.fn(),
     fetchMessages: vi.fn(),
   };
@@ -36,9 +38,13 @@ function mountDom() {
   setStreaming(false);
   api.createChatStream.mockReset();
   api.createConversation.mockReset();
+  api.createAnnotation.mockReset();
+  api.fetchAnnotations.mockReset();
   api.fetchConversations.mockReset();
   api.fetchMessages.mockReset();
   api.fetchConversations.mockResolvedValue([]);
+  api.createAnnotation.mockResolvedValue({});
+  api.fetchAnnotations.mockResolvedValue({ annotations: [] });
 }
 
 afterEach(function () {

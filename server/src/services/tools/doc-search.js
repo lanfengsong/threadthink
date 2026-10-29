@@ -45,9 +45,10 @@ export var docSearchTool = {
       var queryEmbedding = await getEmbedding(query, apiKey, apiBase, model);
       if (!queryEmbedding) return { error: '查询向量化失败' };
 
-      // Get all chunks for this user
+      // Get all chunks for this user.  Only independent chunks are returned:
+      // adjacent-paragraph context expansion is not implemented.
       var chunks = db.prepare(
-        'SELECT c.id, c.content, c.embedding, c.chunk_index, d.filename, d.id as doc_id ' +
+        'SELECT c.id, c.content, c.embedding, c.chunk_index, c.section_path, c.paragraph_index, c.is_overflow_split, d.filename, d.id as doc_id ' +
         'FROM chunks c JOIN documents d ON c.document_id = d.id ' +
         'WHERE d.user_id = ?'
       ).all(userId);
@@ -69,6 +70,9 @@ export var docSearchTool = {
           filename: chunks[i].filename,
           chunk_index: chunks[i].chunk_index,
           content: chunks[i].content,
+          section_path: chunks[i].section_path || '',
+          paragraph_index: chunks[i].paragraph_index,
+          is_overflow_split: chunks[i].is_overflow_split ? true : false,
           score: score,
         });
       }
@@ -83,6 +87,7 @@ export var docSearchTool = {
           return {
             filename: s.filename,
             content: s.content,
+            section_path: s.section_path,
             relevance: Math.round(s.score * 100) / 100,
           };
         }),

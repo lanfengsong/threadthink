@@ -5,6 +5,12 @@
 import { describe, it, expect } from 'vitest';
 import { renderMarkdown, stripMarkdown } from '../../src/markdown.js';
 
+/** 剥离 data-block-id 装饰属性（锚定容器标记，非渲染语义） */
+function stripIds(html) {
+  return html.replace(/\s*data-block-id="[^"]*"/g, '');
+}
+
+
 describe('stripMarkdown', function () {
   it('去除粗体标记', function () {
     expect(stripMarkdown('**hello**')).toBe('hello');
@@ -49,24 +55,24 @@ describe('renderMarkdown', function () {
 
   it('代码块渲染', function () {
     var result = renderMarkdown('```\nvar x = 1;\n```');
-    expect(result).toContain('<pre><code>');
+    expect(stripIds(result)).toContain('<pre><code>');
     expect(result).toContain('var x = 1;');
   });
 
   it('标题渲染', function () {
-    expect(renderMarkdown('## 你好')).toContain('<h3>你好</h3>');
+    expect(stripIds(renderMarkdown('## 你好'))).toContain('<h3>你好</h3>');
   });
 
   it('无序列表', function () {
     var result = renderMarkdown('- 项目一\n- 项目二');
     expect(result).toContain('<ul>');
-    expect(result).toContain('<li>项目一</li>');
+    expect(stripIds(result)).toContain('<li>项目一</li>');
   });
 
   it('有序列表', function () {
     var result = renderMarkdown('1. 第一步\n2. 第二步');
     expect(result).toContain('<ol>');
-    expect(result).toContain('<li>第一步</li>');
+    expect(stripIds(result)).toContain('<li>第一步</li>');
   });
 
   it('HTML 转义', function () {
@@ -77,6 +83,6 @@ describe('renderMarkdown', function () {
 
   it('普通段落', function () {
     var result = renderMarkdown('hello world');
-    expect(result).toContain('<p>hello world</p>');
+    expect(stripIds(result)).toContain('<p>hello world</p>');
   });
 });

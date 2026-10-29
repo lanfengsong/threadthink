@@ -7,9 +7,9 @@ import { v4 as uuid } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { decrypt } from './crypto.service.js';
 import { getEmbeddings, getEmbedding, cosineSimilarity } from './embedding.service.js';
-import { splitChunks } from './chunking.js';
+import { chunkDocument } from './chunking.js';
 
-export { splitChunks } from './chunking.js';
+export { splitChunks, chunkDocument } from './chunking.js';
 
 export async function processDocument(filePath, filename, mimetype, userId) {
   var db = getDb();
@@ -19,7 +19,9 @@ export async function processDocument(filePath, filename, mimetype, userId) {
   var rawText = extractText(filePath, fileType);
   if (!rawText || rawText.trim().length === 0) throw new Error('文件内容为空或无法提取文本');
 
-  var chunks = splitChunks(rawText);
+  // One retrieval unit per natural paragraph; Markdown carries its heading
+  // path as embedding context, and only overlong paragraphs are split further.
+  var chunks = chunkDocument(rawText, { isMarkdown: fileType === 'md' });
   if (chunks.length === 0) throw new Error('无法分段，文件内容可能太短');
 
   var user = db.prepare('SELECT api_key, api_base, model FROM users WHERE id = ?').get(userId);
@@ -30,9 +32,10 @@ export async function processDocument(filePath, filename, mimetype, userId) {
   var model = user.model || 'deepseek-chat';
 
   // Network work must finish before entering the synchronous SQLite transaction.
+  // The embedding input is the heading-path-augmented text, not the bare chunk.
   var embeddings;
   try {
-    embeddings = await getEmbeddings(chunks, apiKey, apiBase, model);
+    embeddings = await getEmbeddings(chunks.map(function (chunk) { return chunk.embeddingText; }), apiKey, apiBase, model);
   } catch (e) {
     throw new Error('向量化失败: ' + e.message);
   }
@@ -45,14 +48,21 @@ export async function processDocument(filePath, filename, mimetype, userId) {
   try { fileSize = statSync(filePath).size; } catch (e) { /* best effort */ }
 
   var insertChunk = db.prepare(
-    'INSERT INTO chunks (id, document_id, chunk_index, content, embedding, token_count) VALUES (?, ?, ?, ?, ?, ?)'
+    'INSERT INTO chunks (id, document_id, chunk_index, content, embedding, token_count, ' +
+    'section_path, embedding_text, paragraph_index, is_overflow_split) ' +
+    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   );
   var insertAll = db.transaction(function () {
     db.prepare(
       'INSERT INTO documents (id, user_id, filename, file_type, file_size, chunk_count) VALUES (?, ?, ?, ?, ?, ?)'
     ).run(docId, userId, filename, fileType, fileSize, chunks.length);
     for (var i = 0; i < chunks.length; i++) {
-      insertChunk.run(uuid(), docId, i, chunks[i], JSON.stringify(embeddings[i]), Math.ceil(chunks[i].length / 2));
+      insertChunk.run(
+        uuid(), docId, i,
+        chunks[i].content, JSON.stringify(embeddings[i]), Math.ceil(chunks[i].content.length / 2),
+        chunks[i].sectionPath || null, chunks[i].embeddingText, chunks[i].paragraphIndex,
+        chunks[i].isOverflowSplit ? 1 : 0
+      );
     }
   });
   insertAll();
@@ -72,7 +82,7 @@ export async function searchDocuments(userId, query) {
   if (!queryEmbedding) throw new Error('查询向量化失败');
 
   var chunks = db.prepare(
-    'SELECT c.id, c.content, c.embedding, c.chunk_index, d.filename, d.id as doc_id ' +
+    'SELECT c.id, c.content, c.embedding, c.chunk_index, c.section_path, c.paragraph_index, c.is_overflow_split, d.filename, d.id as doc_id ' +
     'FROM chunks c JOIN documents d ON c.document_id = d.id WHERE d.user_id = ?'
   ).all(userId);
   var scored = [];
@@ -83,12 +93,22 @@ export async function searchDocuments(userId, query) {
     scored.push({
       filename: chunks[i].filename,
       content: chunks[i].content,
+      section_path: chunks[i].section_path || '',
+      paragraph_index: chunks[i].paragraph_index,
+      is_overflow_split: chunks[i].is_overflow_split ? true : false,
       score: cosineSimilarity(queryEmbedding, emb),
     });
   }
   scored.sort(function (a, b) { return b.score - a.score; });
   return scored.slice(0, 5).map(function (item) {
-    return { filename: item.filename, content: item.content, score: Math.round(item.score * 100) / 100 };
+    return {
+      filename: item.filename,
+      content: item.content,
+      section_path: item.section_path,
+      paragraph_index: item.paragraph_index,
+      is_overflow_split: item.is_overflow_split,
+      score: Math.round(item.score * 100) / 100,
+    };
   });
 }
 
