@@ -5,10 +5,13 @@
 import { getDb } from '../db/connection.js';
 import { decrypt } from './crypto.service.js';
 import { getToolDefinitions, executeTool } from './tools/index.js';
+import { searchDocuments } from './document.service.js';
 import { randomUUID } from 'crypto';
 
 var MAX_TOOL_ROUNDS = 5;
 var MAX_CONSECUTIVE_FAILURES = 2; // 同一工具连续失败达此数 → 注入放弃指令（反思自愈上限）
+var RAG_TOP_K = 3;                // 注入的文档片段上限
+var RAG_MAX_CHARS = 1500;         // 注入总字符上限（按 K 平分）
 var PRE_STEP_HOOKS = [];          // 请求前钩子链（design 3.2）：可改写消息/拦截；默认空
 
 /** 注册请求前钩子（供 RAG 注入、敏感过滤等横切逻辑挂载）。 */
@@ -22,6 +25,32 @@ function logDecision(db, conversationId, traceId, seqRef, kind, detail) {
     db.prepare('INSERT INTO agent_logs (id, conversation_id, trace_id, seq, kind, detail) VALUES (?, ?, ?, ?, ?, ?)')
       .run(randomUUID(), conversationId, traceId, seqRef.value++, kind, detail === undefined ? null : JSON.stringify(detail));
   } catch (e) { /* 日志失败不影响主流程 */ }
+}
+
+/**
+ * RAG 上下文注入（design 3.5 上下文分节——【相关资料】节）：
+ * 每轮对话只注入一次（首个请求前）；检索失败/无文档静默降级，
+ * 绝不因检索问题阻断对话。返回是否注入了内容。
+ */
+async function injectRagContext(messages, userId, query) {
+  try {
+    var db = getDb();
+    var hasDocs = db.prepare('SELECT COUNT(*) AS n FROM documents WHERE user_id = ?').get(userId);
+    if (!hasDocs || hasDocs.n === 0) return false;
+    var results = await searchDocuments(userId, query);
+    if (!Array.isArray(results) || results.length === 0) return false;
+    var perChunk = Math.floor(RAG_MAX_CHARS / RAG_TOP_K);
+    var lines = ['【相关资料】以下是用户知识库中与当前问题相关的片段（供参考，未命中请忽略）：', ''];
+    for (var i = 0; i < Math.min(results.length, RAG_TOP_K); i++) {
+      var r = results[i];
+      var header = r.filename + (r.section_path ? '｜' + r.section_path : '');
+      lines.push('· [' + header + '] ' + String(r.content || '').slice(0, perChunk));
+    }
+    messages.push({ role: 'system', content: lines.join('\n') });
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
 /**
@@ -70,6 +99,9 @@ export async function streamChat(ctx, onToken, onToolStart, onToolEnd, onDone, o
     );
     messages.push({ role: 'user', content: ctx.message });
     db.prepare("UPDATE conversations SET updated_at = datetime('now') WHERE id = ?").run(conversationId);
+
+    // RAG 上下文注入（design 3.5）：每轮一次，检索失败静默降级
+    await injectRagContext(messages, userId, ctx.message);
 
     var toolRounds = 0;
     var toolAudit = [];

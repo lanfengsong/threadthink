@@ -132,3 +132,75 @@ test('正常工具链：日志序列完整且 trace_id 一致', async function (
   var done = logs[logs.length - 1];
   assert.ok(JSON.parse(done.detail).rounds >= 1);
 });
+test('RAG 注入：用户有文档时，首个请求携带【相关资料】上下文', async function () {
+  var auth = await register();
+  var db = getDb();
+  var userRow = db.prepare('SELECT id FROM users ORDER BY rowid DESC').get();
+  db.prepare('INSERT INTO documents (id, user_id, filename, file_type, chunk_count) VALUES (?, ?, ?, ?, ?)').run('d1', userRow.id, 'a.txt', 'txt', 1);
+  db.prepare('INSERT INTO chunks (id, document_id, chunk_index, content, embedding, section_path) VALUES (?, ?, ?, ?, ?, ?)')
+    .run('c1', 'd1', 0, 'ThreadThink 是批注式对话工具。', JSON.stringify([1, 0]), '概述');
+
+  var injected = false;
+  var calls = 0;
+  globalThis.fetch = async function (url, options) {
+    var body = JSON.parse(options.body);
+    calls++;
+    if (Array.isArray(body.input)) { // embedding 调用
+      return new Response(JSON.stringify({ data: [{ index: 0, embedding: [1, 0] }] }), { status: 200 });
+    }
+    if (body.stream === false) { // sync：验证注入
+      if (JSON.stringify(body.messages).indexOf('【相关资料】') !== -1) injected = true;
+      return stopResponse('');
+    }
+    return sse('基于文档的回答。');
+  };
+  var res = await app.inject({
+    method: 'POST', url: '/api/chat/stream', headers: { authorization: 'Bearer ' + auth.token },
+    payload: { conversationId: auth.conversationId, message: 'ThreadThink 是什么？' },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(injected, true, '应注入【相关资料】');
+  assert.match(res.body, /基于文档的回答/);
+});
+
+test('RAG 注入：无文档时零额外开销（无 embedding 调用）', async function () {
+  var auth = await register();
+  var calls = 0;
+  globalThis.fetch = async function (url, options) {
+    var body = JSON.parse(options.body);
+    calls++;
+    if (body.stream === false) return stopResponse('');
+    return sse('无文档回答。');
+  };
+  var res = await app.inject({
+    method: 'POST', url: '/api/chat/stream', headers: { authorization: 'Bearer ' + auth.token },
+    payload: { conversationId: auth.conversationId, message: '问个问题' },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(calls, 2, '无文档应只有 sync + stream 两次调用');
+  assert.match(res.body, /无文档回答/);
+});
+
+test('RAG 注入：检索失败时静默降级，对话照常', async function () {
+  var auth = await register();
+  var db = getDb();
+  var userRow = db.prepare('SELECT id FROM users ORDER BY rowid DESC').get();
+  db.prepare('INSERT INTO documents (id, user_id, filename, file_type, chunk_count) VALUES (?, ?, ?, ?, ?)').run('d2', userRow.id, 'b.txt', 'txt', 1);
+  db.prepare('INSERT INTO chunks (id, document_id, chunk_index, content, embedding) VALUES (?, ?, ?, ?, ?)')
+    .run('c2', 'd2', 0, 'some content', JSON.stringify([1, 0]));
+
+  var calls = 0;
+  globalThis.fetch = async function (url, options) {
+    var body = JSON.parse(options.body);
+    calls++;
+    if (Array.isArray(body.input)) return new Response('down', { status: 500 }); // embedding 失败
+    if (body.stream === false) return stopResponse('');
+    return sse('降级后的回答。');
+  };
+  var res = await app.inject({
+    method: 'POST', url: '/api/chat/stream', headers: { authorization: 'Bearer ' + auth.token },
+    payload: { conversationId: auth.conversationId, message: '查资料' },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.match(res.body, /降级后的回答/);
+});
