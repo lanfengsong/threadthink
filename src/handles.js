@@ -11,7 +11,6 @@ import {
 import { getColor } from './palette.js';
 import { genId, showToast, scrollToBottom, autoScrollIfAllowed } from './utils.js';
 import { renderMarkdown } from './markdown.js';
-import { renderMarkdown } from './markdown.js';
 import { renderMessage, refreshMessage, renderConversation, updateStreamingBody } from './renderer.js';
 import { syncSidebarHeights, rebuildSidebar } from './sidebar.js';
 import { createFloatingCard } from './cards.js';
