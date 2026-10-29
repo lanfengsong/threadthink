@@ -4,7 +4,7 @@
 
 import { getDb } from '../db/connection.js';
 import { decrypt } from './crypto.service.js';
-import { getToolDefinitions, executeTool } from './tools/index.js';
+import { getToolDefinitions, executeTool, renderToolResult } from './tools/index.js';
 import { searchDocuments } from './document.service.js';
 import { randomUUID } from 'crypto';
 
@@ -158,7 +158,8 @@ export async function streamChat(ctx, onToken, onToolStart, onToolEnd, onDone, o
             status: toolFailed ? 'error' : 'done',
           });
           onToolEnd({ tool_name: toolName, result: toolResult });
-          messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(toolResult) });
+          // 输出契约（design 3.3）：模型看到的是 render 后的内容（默认 JSON.stringify）
+          messages.push({ role: 'tool', tool_call_id: tc.id, content: renderToolResult(toolName, toolArgs, toolResult) });
 
           // 反思自愈（design 3.2）：显式失败反馈，注入修正/放弃指令
           if (toolFailed) {

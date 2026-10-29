@@ -22,6 +22,19 @@ export var docSearchTool = {
         },
         required: ['query'],
       },
+      // 输出契约（design 3.3）：模型看到的是格式化摘要，而非原始 JSON 全量
+      output: {
+        render: function (args, value) {
+          if (!value || value.error) return JSON.stringify(value);
+          var lines = ['找到 ' + value.results.length + ' 条相关文档：'];
+          for (var i = 0; i < value.results.length; i++) {
+            var r = value.results[i];
+            var header = r.filename + (r.section_path ? '｜' + r.section_path : '');
+            lines.push((i + 1) + '. [' + header + '] ' + String(r.content || '').slice(0, 300));
+          }
+          return lines.join('\n');
+        },
+      },
     },
   },
 

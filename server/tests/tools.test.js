@@ -121,3 +121,37 @@ test('fetch_url does not follow redirects automatically', async function () {
     globalThis.fetch = originalFetch;
   }
 });
+
+test('output.render 决定模型视角：注册输出契约的工具格式化结果', async function () {
+  var { registerTool, renderToolResult } = await import('../src/services/tools/index.js');
+  registerTool('contract-test-tool', {
+    type: 'function',
+    function: {
+      name: 'contract-test-tool',
+      description: 'test',
+      parameters: { type: 'object', properties: {} },
+      output: { render: function (args, value) { return 'RENDERED:' + (value && value.v); } },
+    },
+  }, async function () { return { v: 'ok' }; });
+
+  assert.equal(renderToolResult('contract-test-tool', {}, { v: 'ok' }), 'RENDERED:ok');
+});
+
+test('无输出契约的工具回退 JSON.stringify（向后兼容）', async function () {
+  var { renderToolResult } = await import('../src/services/tools/index.js');
+  assert.equal(renderToolResult('calculator', { expression: '1+1' }, { result: 2 }), JSON.stringify({ result: 2 }));
+});
+
+test('doc_search 输出契约：正常值为格式化摘要、错误值回退 JSON', async function () {
+  var { renderToolResult } = await import('../src/services/tools/index.js');
+  var ok = renderToolResult('doc_search', { query: 'q' }, {
+    query: 'q', total_documents: 1,
+    results: [{ filename: 'a.md', section_path: '概述', content: '内容' }],
+  });
+  assert.match(ok, /找到 1 条相关文档/);
+  assert.match(ok, /a\.md｜概述/);
+  assert.ok(ok.indexOf('"results"') === -1 && ok.indexOf('"query"') === -1, '模型视角不应包含原始 JSON 字段');
+
+  var err = renderToolResult('doc_search', { query: 'q' }, { error: '缺少搜索查询' });
+  assert.equal(err, JSON.stringify({ error: '缺少搜索查询' }));
+});
