@@ -8,6 +8,21 @@ import { getToolDefinitions, executeTool } from './tools/index.js';
 import { randomUUID } from 'crypto';
 
 var MAX_TOOL_ROUNDS = 5;
+var MAX_CONSECUTIVE_FAILURES = 2; // 同一工具连续失败达此数 → 注入放弃指令（反思自愈上限）
+var PRE_STEP_HOOKS = [];          // 请求前钩子链（design 3.2）：可改写消息/拦截；默认空
+
+/** 注册请求前钩子（供 RAG 注入、敏感过滤等横切逻辑挂载）。 */
+export function addPreStepHook(fn) { PRE_STEP_HOOKS.push(fn); }
+/** 测试用：清空钩子。 */
+export function clearPreStepHooks() { PRE_STEP_HOOKS.length = 0; }
+
+/** 决策日志（design 3.2/3.3）：追加式、不阻塞主流程（失败仅放弃记录）。 */
+function logDecision(db, conversationId, traceId, seqRef, kind, detail) {
+  try {
+    db.prepare('INSERT INTO agent_logs (id, conversation_id, trace_id, seq, kind, detail) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(randomUUID(), conversationId, traceId, seqRef.value++, kind, detail === undefined ? null : JSON.stringify(detail));
+  } catch (e) { /* 日志失败不影响主流程 */ }
+}
 
 /**
  * Stream a chat completion. Handles tool calling internally.
@@ -59,8 +74,22 @@ export async function streamChat(ctx, onToken, onToolStart, onToolEnd, onDone, o
     var toolRounds = 0;
     var toolAudit = [];
     var isAnthropic = isAnthropicApi(apiBase);
+    var consecutiveFailures = 0; // 反思自愈：连续失败计数
+    var traceId = randomUUID();
+    var logSeq = { value: 0 };
+    logDecision(db, conversationId, traceId, logSeq, 'request', { message: ctx.message });
+    var startedAt = Date.now();
 
     while (toolRounds < MAX_TOOL_ROUNDS) {
+      // pre-step 钩子链（design 3.2）：请求发出前可改写消息/拦截
+      var stepState = { messages: messages, allowed: true };
+      for (var h = 0; h < PRE_STEP_HOOKS.length; h++) {
+        try { stepState = (await PRE_STEP_HOOKS[h](stepState, { userId: userId, conversationId: conversationId, traceId: traceId })) || stepState; }
+        catch (e) { /* 钩子异常不阻断主流程 */ }
+      }
+      if (!stepState.allowed) { messages = stepState.messages; }
+      else { messages = stepState.messages || messages; }
+
       var aiResponse = await callAISync(messages, apiBase, apiKey, model, systemPrompt, isAnthropic, true);
       var choice = normalizeAiResponse(aiResponse, isAnthropic);
 
@@ -85,16 +114,33 @@ export async function streamChat(ctx, onToken, onToolStart, onToolEnd, onDone, o
             toolResult = { error: '工具参数无效: ' + e.message };
           }
 
+          logDecision(db, conversationId, traceId, logSeq, 'tool_call', { round: toolRounds, tool: toolName, arguments: toolArgs });
           onToolStart({ tool_name: toolName, arguments: toolArgs });
           if (toolResult === undefined) toolResult = await executeTool(toolName, toolArgs, { userId: userId });
+          var toolFailed = !!(toolResult && toolResult.error);
+          logDecision(db, conversationId, traceId, logSeq, 'tool_result', { tool: toolName, status: toolFailed ? 'error' : 'done', preview: JSON.stringify(toolResult).slice(0, 200) });
           toolAudit.push({
             tool_name: toolName,
             arguments: toolArgs,
             result: toolResult,
-            status: toolResult && toolResult.error ? 'error' : 'done',
+            status: toolFailed ? 'error' : 'done',
           });
           onToolEnd({ tool_name: toolName, result: toolResult });
           messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(toolResult) });
+
+          // 反思自愈（design 3.2）：显式失败反馈，注入修正/放弃指令
+          if (toolFailed) {
+            consecutiveFailures++;
+            if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+              logDecision(db, conversationId, traceId, logSeq, 'retry', { tool: toolName, attempts: consecutiveFailures, action: 'give_up' });
+              messages.push({ role: 'system', content: '工具「' + toolName + '」连续失败，请停止调用该工具，基于现有信息直接回答用户的问题。' });
+            } else {
+              logDecision(db, conversationId, traceId, logSeq, 'retry', { tool: toolName, attempts: consecutiveFailures, action: 'revise' });
+              messages.push({ role: 'system', content: '上一次工具「' + toolName + '」调用失败：' + String(toolResult.error).slice(0, 200) + '。请修正参数或换其他方式，不要重复相同的失败操作。' });
+            }
+          } else {
+            consecutiveFailures = 0;
+          }
         }
         continue;
       }
@@ -106,6 +152,7 @@ export async function streamChat(ctx, onToken, onToolStart, onToolEnd, onDone, o
       });
       var assistantMsgId = randomUUID();
       persistAssistantAndAudit(db, conversationId, assistantMsgId, streamedContent, toolAudit, ctx.message);
+      logDecision(db, conversationId, traceId, logSeq, 'done', { rounds: toolRounds, durationMs: Date.now() - startedAt, chars: streamedContent.length });
       onDone({ messageId: assistantMsgId });
       return;
     }
@@ -117,6 +164,7 @@ export async function streamChat(ctx, onToken, onToolStart, onToolEnd, onDone, o
     if (!finalContent) throw new Error('AI API 返回了无效的最终响应');
     var finalMsgId = randomUUID();
     persistAssistantAndAudit(db, conversationId, finalMsgId, finalContent, toolAudit, ctx.message);
+    logDecision(db, conversationId, traceId, logSeq, 'done', { rounds: toolRounds, durationMs: Date.now() - startedAt, chars: finalContent.length });
     onToken(finalContent);
     onDone({ messageId: finalMsgId });
   } catch (e) {
