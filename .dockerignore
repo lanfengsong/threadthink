@@ -1,0 +1,13 @@
+node_modules
+server/node_modules
+.git
+.claude
+.threadthink
+data
+server/data
+.env
+.env.*
+!.env.example
+dist
+coverage
+*.log

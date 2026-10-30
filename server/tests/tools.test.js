@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { calculatorTool } from '../src/services/tools/calculator.js';
-import { fetchUrlTool } from '../src/services/tools/fetch-url.js';
+import { fetchUrlTool, createFetchUrlTool } from '../src/services/tools/fetch-url.js';
+import { mockHttp } from './helpers/tool-http.js';
 
 test('calculator supports bounded arithmetic grammar and whitelisted functions', async function () {
   var cases = [
@@ -85,41 +86,22 @@ test('fetch_url rejects unsupported protocols and non-public literal addresses',
   }
 });
 
-test('fetch_url allows a public literal with a pure mocked fetch and restores the mock', async function () {
-  var originalFetch = globalThis.fetch;
-  var calledUrl;
-  globalThis.fetch = async function (url) {
-    calledUrl = url;
-    return new Response('<title>Example</title><p>Hello</p>', {
-      status: 200,
-      headers: { 'content-type': 'text/html' },
-    });
-  };
-  try {
-    var result = await fetchUrlTool.execute({ url: 'https://93.184.216.34/example' });
-    assert.equal(result.title, 'Example');
-    assert.equal(result.content, 'Example Hello');
-    assert.equal(calledUrl, 'https://93.184.216.34/example');
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-  assert.equal(globalThis.fetch, originalFetch);
+test('fetch_url allows a public literal with a pure mocked native request', async function () {
+  var http = mockHttp();
+  var tool = createFetchUrlTool({ requestHttps: http.request });
+  var result = await tool.execute({ url: 'https://93.184.216.34/example' });
+  assert.equal(result.title, 'Example');
+  assert.equal(result.content, 'Example Hello');
+  assert.equal(http.calls[0].url.toString(), 'https://93.184.216.34/example');
 });
 
-test('fetch_url does not follow redirects automatically', async function () {
-  var originalFetch = globalThis.fetch;
-  globalThis.fetch = async function () {
-    return new Response('', {
-      status: 302,
-      headers: { location: 'http://127.0.0.1/private' },
-    });
-  };
-  try {
-    var result = await fetchUrlTool.execute({ url: 'https://example.com/start' });
-    assert.match(result.error, /重定向/);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+test('fetch_url does not follow redirects automatically and closes the response', async function () {
+  var http = mockHttp({ status: 302, headers: { location: 'http://127.0.0.1/private' } });
+  var tool = createFetchUrlTool({ requestHttps: http.request, resolveHost: async function () { return [{ address: '93.184.216.34' }]; } });
+  var result = await tool.execute({ url: 'https://example.com/start' });
+  assert.match(result.error, /重定向/);
+  assert.equal(http.calls.length, 1);
+  assert.equal(http.calls[0].response.destroyed, true);
 });
 
 test('output.render 决定模型视角：注册输出契约的工具格式化结果', async function () {

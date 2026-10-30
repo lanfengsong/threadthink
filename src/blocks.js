@@ -23,9 +23,9 @@ function hash(text) {
   return ('0000000' + h.toString(16)).slice(-8);
 }
 
-/** Deterministic block id: same index + same text -> same id. */
-function blockId(index, type, text) {
-  return 'b' + hash(index + '|' + type + '|' + text);
+/** Content identity survives inserting, deleting or reordering other blocks. */
+function blockId(occurrence, type, text) {
+  return 'b' + hash(type + '|' + text) + '-' + occurrence;
 }
 
 /**
@@ -44,9 +44,13 @@ export function parseBlocks(markdown) {
   var inFence = false;
   var fenceLines = [];
   var blank = false;
+  var occurrences = new Map();
 
   function push(type, text) {
-    blocks.push({ id: blockId(blocks.length, type, text), type: type, text: text, gap: blank });
+    var key = type + '|' + text;
+    var occurrence = occurrences.get(key) || 0;
+    occurrences.set(key, occurrence + 1);
+    blocks.push({ id: blockId(occurrence, type, text), type: type, text: text, gap: blank });
     blank = false;
   }
 

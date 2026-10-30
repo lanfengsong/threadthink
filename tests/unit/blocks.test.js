@@ -39,11 +39,18 @@ describe('parseBlocks', function () {
     expect(parseBlocks(src)).toEqual(parseBlocks(src));
   });
 
-  it('相同文本不同位置：id 不同（由序号参与哈希）', function () {
+  it('相同文本不同位置：id 不同（同文块出现次数区分）', function () {
     var src = '注意这一点。\n\n注意这一点。';
     var blocks = parseBlocks(src);
     expect(blocks[0].id).not.toBe(blocks[1].id);
     expect(blocks[0].text).toBe(blocks[1].text);
+  });
+
+  it('插入、删除和重排其他块不改变未变块的身份', function () {
+    var original = parseBlocks('第一段。\n\n第二段。\n\n第三段。');
+    var changed = parseBlocks('新开头。\n\n第三段。\n\n第一段。');
+    expect(changed[1].id).toBe(original[2].id);
+    expect(changed[2].id).toBe(original[0].id);
   });
 
   it('内容改变时该块 id 改变（其余块不变）', function () {

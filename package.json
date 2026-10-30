@@ -4,12 +4,40 @@
   "private": true,
   "description": "批注式 AI 对话工具",
   "type": "module",
+  "main": "./core/index.js",
+  "types": "./core/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./core/index.d.ts",
+      "import": "./core/index.js"
+    },
+    "./testkit": {
+      "types": "./core/testkit.d.ts",
+      "import": "./core/testkit.js"
+    }
+  },
+  "bin": {
+    "tt": "./bin/tt.js"
+  },
+  "files": [
+    "core",
+    "bin",
+    "docs",
+    "examples"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:sdk": "vitest run tests/sdk",
+    "test:types": "tsc --noEmit --strict --module nodenext --target es2022 tests/sdk/types.ts",
+    "tt": "node bin/tt.js",
+    "eval:mock": "node evals/run-mock.js"
   },
   "repository": {
     "type": "git",
@@ -25,10 +53,14 @@
   "license": "MIT",
   "homepage": "https://github.com/lanfengsong/threadthink#readme",
   "devDependencies": {
+    "@types/node": "^22.0.0",
+    "jsdom": "^29.1.1",
+    "typescript": "^5.9.3",
     "vite": "^8.1.5",
-    "vitest": "^3.2.7"
+    "vitest": "^5.0.5"
   },
   "dependencies": {
-    "jsdom": "^29.1.1"
+    "ajv": "^8.17.1",
+    "import-meta-resolve": "^4.2.0"
   }
 }

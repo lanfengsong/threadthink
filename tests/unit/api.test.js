@@ -3,7 +3,7 @@
    ============================================================ */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createChatStream } from '../../src/api.js';
+import { createChatStream, createAnnotationStream, updateAnnotation } from '../../src/api.js';
 
 function sseResponse(chunks, status, lifecycle) {
   var encoder = new TextEncoder();
@@ -169,5 +169,32 @@ describe('createChatStream', function () {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')));
 
     await expect(createChatStream('c1', '问题', {})).rejects.toThrow('network down');
+  });
+
+  it('annotation replies reuse SSE handling without sending a chat message', async function () {
+    localStorage.setItem('tt_token', 'test-token');
+    var fetcher = vi.fn().mockResolvedValue(fragmentedSseResponse(
+      'event: token\r\ndata: {"content":"批注"}\r\n\r\n' +
+      'event: done\r\ndata: {"messageId":"reply","traceId":"trace","messageSeq":9}\r\n\r\n', 1));
+    vi.stubGlobal('fetch', fetcher);
+    var tokens = [], done;
+    await createAnnotationStream('a/1', { onToken: function (token) { tokens.push(token); }, onDone: function (data) { done = data; } });
+    expect(fetcher).toHaveBeenCalledWith('/api/annotations/a%2F1/reply', expect.objectContaining({ method: 'POST', body: '{}' }));
+    expect(tokens).toEqual(['批注']); expect(done).toEqual({ messageId: 'reply', traceId: 'trace', messageSeq: 9 });
+  });
+
+  it('annotation streams also reject a missing terminal event', async function () {
+    localStorage.setItem('tt_token', 'test-token');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse(['event: token\ndata: {"content":"partial"}\n\n'])));
+    await expect(createAnnotationStream('a', {})).rejects.toThrow('interrupted');
+  });
+
+  it('persists question and status changes and surfaces server errors', async function () {
+    var fetcher = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ annotation: { id: 'a', question: 'q', status: 'resolved' } })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: '只读' }), { status: 400 }));
+    vi.stubGlobal('fetch', fetcher);
+    await expect(updateAnnotation('a', { question: 'q', status: 'resolved' })).resolves.toMatchObject({ id: 'a', status: 'resolved' });
+    expect(fetcher.mock.calls[0]).toEqual(['/api/annotations/a', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ question: 'q', status: 'resolved' }) })]);
+    await expect(updateAnnotation('a', { status: 'active' })).rejects.toThrow('只读');
   });
 });

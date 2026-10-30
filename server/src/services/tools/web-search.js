@@ -2,6 +2,10 @@
    ThreadThink Server — Tool: Web Search (DuckDuckGo)
    ============================================================ */
 
+import { createSafeHttpClient } from './safe-http.js';
+
+var requestSearch = createSafeHttpClient({ timeoutMs: 8000 });
+
 export var webSearchTool = {
   definition: {
     type: 'function',
@@ -12,24 +16,32 @@ export var webSearchTool = {
         type: 'object',
         properties: {
           query: {
-            type: 'string',
+            type: 'string', minLength: 1, maxLength: 2000,
             description: '搜索关键词，用中文或英文',
           },
         },
-        required: ['query'],
+        required: ['query'], additionalProperties: false,
       },
+      output: { schema: {
+        type: 'object', required: ['query', 'results'], additionalProperties: false,
+        properties: { query: { type: 'string' }, results: { type: 'array', maxItems: 6, items: {
+          type: 'object', required: ['title', 'snippet'], additionalProperties: false,
+          properties: { title: { type: 'string' }, snippet: { type: 'string' }, source: { type: 'string' } },
+        } } },
+      } },
     },
   },
 
-  execute: async function (args) {
-    var query = args.query;
-    if (!query) return { error: '缺少搜索关键词' };
+  execute: async function (args, context) {
+    var query = args && args.query;
+    if (typeof query !== 'string' || !query.trim()) return { error: '缺少搜索关键词' };
+    if (query.length > 2000) return { error: '搜索关键词过长' };
 
     try {
       // Use DuckDuckGo Instant Answer API (free, no key needed)
       var url = 'https://api.duckduckgo.com/?q=' + encodeURIComponent(query) + '&format=json&no_html=1&skip_disambig=1';
-      var resp = await fetch(url, { signal: AbortSignal.timeout(8000) });
-      var data = await resp.json();
+      var resp = await requestSearch(url, { ...context, acceptContentTypes: ['application/json', 'application/javascript', 'application/x-javascript', 'text/javascript'] });
+      var data = JSON.parse(resp.body);
 
       var results = [];
 

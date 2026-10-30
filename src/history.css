@@ -1,0 +1,18 @@
+.history-panel { width: min(780px, calc(100vw - 32px)); max-height: 86vh; margin: auto; padding: 24px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); box-shadow: var(--shadow-lg); }
+.history-panel::backdrop { background: rgba(0, 0, 0, .35); }
+.history-panel header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.history-panel h2 { font-size: 18px; }
+.history-panel p { margin: 12px 0; color: var(--text-secondary); }
+.history-panel button, .history-banner button, .message-history { padding: 7px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); }
+.history-panel button:hover, .history-banner button:hover { background: var(--bg); }
+.history-panel button:focus-visible, .history-banner button:focus-visible, .message-history:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.history-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.history-timeline { padding-left: 24px; }
+.history-timeline li { padding: 12px 0 12px 8px; border-bottom: 1px solid var(--border); }
+.history-event-label { display: flex; align-items: baseline; gap: 8px; font-variant-numeric: tabular-nums; }
+.history-timeline details { margin: 8px 0; }
+.history-timeline summary { cursor: pointer; overflow-wrap: anywhere; }
+.history-timeline pre { padding: 12px; background: var(--bg); white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 var(--font-mono); max-height: 320px; overflow: auto; }
+.history-banner { padding: 10px 20px; background: var(--surface); border-top: 1px solid var(--border); text-align: center; }
+#btnHistory { border-radius: 6px; width: auto; padding: 0 10px; font-size: 13px; }
+@media (max-width: 600px) { .history-panel { padding: 16px; } .history-panel header { align-items: flex-start; } .history-actions button { flex: 1 1 auto; } .tagline { display: none; } }

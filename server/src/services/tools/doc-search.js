@@ -16,14 +16,24 @@ export var docSearchTool = {
         type: 'object',
         properties: {
           query: {
-            type: 'string',
+            type: 'string', minLength: 1, maxLength: 4000,
             description: '搜索查询，用自然语言描述要查找的信息',
           },
         },
-        required: ['query'],
+        required: ['query'], additionalProperties: false,
       },
       // 输出契约（design 3.3）：模型看到的是格式化摘要，而非原始 JSON 全量
       output: {
+        schema: {
+          type: 'object', required: ['results'], additionalProperties: false,
+          properties: {
+            query: { type: 'string' }, message: { type: 'string' }, total_documents: { type: 'integer', minimum: 0 },
+            results: { type: 'array', maxItems: 5, items: {
+              type: 'object', required: ['filename', 'content', 'section_path', 'relevance'], additionalProperties: false,
+              properties: { filename: { type: 'string' }, content: { type: 'string' }, section_path: { type: 'string' }, relevance: { type: 'number' } },
+            } },
+          },
+        },
         render: function (args, value) {
           if (!value || value.error) return JSON.stringify(value);
           var lines = ['找到 ' + value.results.length + ' 条相关文档：'];
@@ -38,11 +48,15 @@ export var docSearchTool = {
     },
   },
 
-  execute: async function (args, userId) {
-    var query = args.query;
-    if (!query) return { error: '缺少搜索查询' };
+  execute: async function (args, userId, context) {
+    var query = args && args.query;
+    if (typeof query !== 'string' || !query.trim()) return { error: '缺少搜索查询' };
+    if (query.length > 4000) return { error: '搜索查询过长' };
+    if (!userId) return { error: '文档检索需要已认证用户' };
+    var signal = context && context.signal;
 
     try {
+      if (signal) signal.throwIfAborted();
       var db = getDb();
 
       // Get user API config
@@ -55,7 +69,8 @@ export var docSearchTool = {
       var model = user.model || 'deepseek-chat';
 
       // Get query embedding
-      var queryEmbedding = await getEmbedding(query, apiKey, apiBase, model);
+      var queryEmbedding = await getEmbedding(query, apiKey, apiBase, model, context);
+      if (signal) signal.throwIfAborted();
       if (!queryEmbedding) return { error: '查询向量化失败' };
 
       // Get all chunks for this user.  Only independent chunks are returned:

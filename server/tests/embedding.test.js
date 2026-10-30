@@ -6,6 +6,22 @@ var originalFetch = globalThis.fetch;
 
 after(function () { globalThis.fetch = originalFetch; });
 
+test('embedding propagates cancellation and cancels oversized response bodies', async function () {
+  var cancelled = false;
+  globalThis.fetch = async function (url, options) {
+    assert.ok(options.signal instanceof AbortSignal);
+    return new Response(new ReadableStream({
+      start: function (controller) { controller.enqueue(new Uint8Array(2 * 1024 * 1024 + 1)); },
+      cancel: function () { cancelled = true; },
+    }));
+  };
+  await assert.rejects(getEmbeddings(['a'], 'key', 'https://provider.test/v1/chat/completions', 'model'), /2MB/);
+  assert.equal(cancelled, true);
+  var controller = new AbortController(); controller.abort(new Error('cancelled-by-user'));
+  globalThis.fetch = async function () { assert.fail('aborted request must not start'); };
+  await assert.rejects(getEmbeddings(['a'], 'key', 'https://provider.test/v1/chat/completions', 'model', { signal: controller.signal }), /cancelled-by-user/);
+});
+
 function response(body, status) {
   return new Response(JSON.stringify(body), { status: status || 200, headers: { 'content-type': 'application/json' } });
 }

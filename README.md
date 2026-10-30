@@ -2,239 +2,184 @@
 
 # 💬 ThreadThink
 
-**批注式 AI 对话工具** — 打破线性对话，在 AI 回答中直接批注追问
+**批注式 AI 对话与可回放 Agent 工具**
 
 [![Node.js](https://img.shields.io/badge/Node.js-22.x-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
-[![Vite](https://img.shields.io/badge/Vite-8.x-646CFF?logo=vite&logoColor=white)](https://vitejs.dev/)
+[![Vite](https://img.shields.io/badge/Vite-8.x-646CFF?logo=vite&logoColor=white)](https://vite.dev/)
 [![Fastify](https://img.shields.io/badge/Fastify-5.x-000000?logo=fastify&logoColor=white)](https://fastify.dev/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/lanfengsong/threadthink/blob/master/LICENSE)
-[![CI](https://img.shields.io/badge/CI-GitHub%20Actions-2088FF?logo=githubactions&logoColor=white)](.github/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 </div>
 
----
+ThreadThink 支持在 AI 回答中选中文字、创建独立批注追问，并将对话、批注和工具调用记录为可寻址的事件。可以查看过去的状态、从某条记录分叉、逻辑回退，或用录制的模型响应和工具结果重跑 Agent 来检查行为一致性。
 
-## 📖 项目简介
+Web、SDK 和 CLI 共用同一个编排器。SDK/CLI 默认使用无需凭据的 mock provider；Web 在用户设置中配置模型。设计与本轮状态见 [design.md](design.md)，实际验证结果见 [QUALITY_REPORT.md](QUALITY_REPORT.md)。
 
-**ThreadThink** 是一个"批注式"的 AI 对话工具。与普通聊天机器人不同，你可以在 AI 的回复中**选中任意文字**，以批注的形式对局部内容进行追问，从而将线性对话升级为**结构化、可回溯的思维线程**。
+## 核心能力
 
-- 🧩 **纯原生前端**：零框架依赖，基于 Vanilla JS + Vite 构建
-- 🔌 **多模型兼容**：支持 DeepSeek / Anthropic / OpenAI 及所有 OpenAI 兼容 API
-- 🔧 **内置工具扩展**：AI 可调用网页搜索、文档检索、数学计算等工具
-- 📚 **RAG 知识库**：上传 PDF / TXT / Markdown 文档，构建个人知识库
+- **独立批注支线**：引用附近原文、截至目标消息的主线历史、父子批注问答链按节组装；批注回答可审计，但不进入后续主线上下文。
+- **锚定与恢复**：块 ID、偏移、SHA-1 指纹和引文回退；歧义不猜测，失效批注显示“内容已变更”并保留引用。支持修改问题、重新回答、标为已解决和侧栏固定。
+- **流式批注**：生成中即可标注，显示“未保存”草稿；主回答保存后顺序保存批注并生成回答。保存失败保留明确错误与重试入口。
+- **Agent 与 Trace**：规划步骤、工具执行、观察、失败反思与有限重试；记录上下文、provider 响应、工具原始值与呈现值、用量和终止原因。
+- **事件回溯**：历史查看、复制分叉、逻辑回退、软删除；事件仅追加，旧数据幂等迁移。
+- **工具与 MCP**：calculator、web_search、fetch_url、doc_search；输入/输出 JSON Schema、取消、超时、大小与并发限制；鉴权 MCP HTTP 接口。
+- **知识库**：用户隔离的 TXT/Markdown 文档上传、自然段分块、标题路径和向量检索；PDF 仅支持有限文本子集，详见边界。
+- **开发者入口**：ESM SDK、CLI、配置 profile、provider 适配器、工具插件与 dispose、TypeScript 声明、testkit 和可运行示例。
 
-## ✨ 核心功能
+## 运行 Web 应用
 
-<table>
-<tr>
-<td>
-
-### 🧵 批注式对话
-- 选中 AI 回复中的任意文字，一键"对此追问"
-- 追问以批注形式挂载在原回答上，保留完整上下文
-- 支持将批注卡片固定到左右侧边栏，随时回看
-
-### 🗂️ 多对话管理
-- 侧边栏对话列表，随时切换历史会话
-- 自动生成对话标题（取首条消息）
-- 一键新建 / 清空 / 删除对话
-
-</td>
-<td>
-
-### 🛠️ AI 工具调用
-- **网页搜索** `web_search` — 实时获取网络信息
-- **网页抓取** `fetch_url` — 读取指定 URL 内容
-- **文档检索** `doc_search` — 基于向量相似度检索知识库
-- **数学计算** `calculator` — 精确表达式求值
-- 最多 5 轮工具循环，自动处理 `tool_calls`
-
-### 🔐 安全与隐私
-- 用户注册 / 登录（JWT 认证 + bcrypt 密码加密）
-- API Key 使用 AES 加密后存储于数据库
-- 支持自定义系统提示词
-
-</td>
-</tr>
-</table>
-
-## 🛠️ 技术栈
-
-| 层次 | 技术 | 说明 |
-|------|------|------|
-| 前端 | Vanilla JS (ES Modules) | 零框架，原生 DOM API |
-| 构建 | [Vite](https://vitejs.dev/) 8.x | 开发服务器 + 生产构建 |
-| 测试 | [Vitest](https://vitest.dev/) 3.x + jsdom | 单元测试 |
-| 后端 | [Fastify](https://fastify.dev/) 5.x | 高性能 Node.js 框架 |
-| 数据库 | better-sqlite3 | 轻量级嵌入式数据库 |
-| 认证 | jsonwebtoken + bcrypt | JWT + 密码哈希 |
-| 部署 | Docker + docker-compose | 前端 Nginx + 后端容器 |
-| CI/CD | GitHub Actions | 测试 + 构建 + 镜像构建 |
-
-## 🚀 快速开始
-
-### 环境要求
-
-- [Node.js](https://nodejs.org/) **22.x** 或更高版本
-- npm（随 Node.js 附带）
-
-### 1. 安装依赖
+需要 Node.js 22 的近期版本（本轮使用 22.21.1）和 npm。请同时安装根目录与后端依赖；后端也会引用根目录的共享 core。
 
 ```bash
-# 安装前端依赖
-npm install
-
-# 安装后端依赖
-cd server && npm install && cd ..
-```
-
-### 2. 配置环境变量
-
-复制 `.env.example` 为 `.env` 并填入你的配置：
-
-```bash
+npm ci
+npm ci --prefix server
 cp .env.example .env
 ```
 
-| 变量 | 必填 | 默认值 | 说明 |
-|------|:---:|--------|------|
-| `JWT_SECRET` | ✅ | - | JWT 签名密钥（生产环境务必修改） |
-| `ENCRYPTION_SECRET` | ✅ | - | API Key 的 AES 加密密钥（至少 32 字符） |
-| `PORT` | | `3000` | 后端服务端口 |
-| `DB_PATH` | | `./data/threadthink.db` | SQLite 数据库文件路径 |
+在 `.env` 配置：
 
-### 3. 启动开发环境
+| 变量 | 用途 |
+|---|---|
+| `JWT_SECRET` | JWT 签名密钥，部署时设置独立随机值 |
+| `ENCRYPTION_SECRET` | API Key 加密密钥，至少 32 字符 |
+| `PORT` | 后端端口，默认 3000 |
+| `HOST` | 监听地址，默认 0.0.0.0 |
+| `DB_PATH` | SQLite 文件路径 |
+| `CORS_ORIGIN` | 开发前端 origin，默认 http://localhost:5173 |
 
 ```bash
-# 终端 1：启动后端（端口 3000）
-cd server && npm run dev
+# 终端 1
+npm run dev --prefix server
 
-# 终端 2：启动前端（端口 5173，已配置代理）
+# 终端 2
 npm run dev
 ```
 
-打开浏览器访问 **http://localhost:5173**，注册账号并登录。
+访问 http://localhost:5173，注册后在设置中填写 API Key、API 地址、模型名称和系统提示词。支持 OpenAI-compatible 与 Anthropic 协议；默认 Web 地址为 DeepSeek 的 chat completions 接口。模型名称请按所用服务配置。本轮不调用真实模型服务。
 
-### 4. 配置 AI 模型
+### 使用批注和历史
 
-登录后点击右上角 ⚙️ 图标，填写：
+1. 发送问题，在 AI 回答中选中文字，点击“对此追问”。
+2. 批注卡片支持继续追问、修改问题、重新回答、已解决状态和左右侧栏固定。
+3. 生成期间创建的批注先作为本地草稿显示；“未保存”提示消失后才代表已保存。草稿失败时可重试保存，关闭或刷新页面前应处理未保存内容。
+4. 顶部或消息旁“历史 / Trace”打开事件记录；选择记录后可查看当时状态、分叉或回退。历史查看期间禁用编辑，返回当前后恢复。
+5. “回放此执行记录”使用录制数据离线重跑编排，不重新访问模型或执行外部工具。缺少必要数据的旧 Trace 会明确报告无法重执行。
+6. “清空”会追加回退到起点的事件；“删除对话”为软删除。这两者都不物理擦除历史。
 
-- **API Key**：你的模型服务商密钥（支持 Anthropic / OpenAI / DeepSeek）
-- **API 地址**：兼容接口地址，默认 `https://api.deepseek.com/v1/chat/completions`
-- **模型**：如 `deepseek-chat`、`claude-sonnet-5`、`gpt-4o` 等
-- **系统提示词**：自定义 AI 的默认行为
+## SDK 与 CLI
 
-## 📖 使用指南
-
-1. **开始对话**：在输入框输入问题，按 `Enter` 发送
-2. **批注追问**：在 AI 回复中**选中文字**，点击弹出的「💬 对此追问」按钮
-3. **固定卡片**：将批注卡片**拖拽**到左侧或右侧边栏固定，便于对比回看
-4. **上传文档**：点击侧边栏 📁 知识库的 `+` 按钮，上传 PDF / TXT / Markdown 文件
-5. **知识库检索**：对话中 AI 会自动使用 `doc_search` 工具检索你的文档
-
-## 📁 项目结构
-
-```
-threadthink/
-├── index.html              # 入口页面
-├── src/                    # 前端源码（ES Modules）
-│   ├── main.js             # 入口
-│   ├── events.js           # 事件绑定与初始化
-│   ├── api.js              # API 客户端封装
-│   ├── renderer.js         # 消息渲染
-│   ├── cards.js            # 批注卡片
-│   ├── annotations.js      # 批注逻辑
-│   ├── selection.js        # 文字选区处理
-│   ├── sidebar.js          # 侧边栏与拖拽
-│   ├── documents.js        # 知识库前端
-│   ├── markdown.js         # Markdown 渲染
-│   ├── settings.js         # 设置面板
-│   └── ...
-├── server/                 # 后端服务（Fastify）
-│   └── src/
-│       ├── index.js        # 服务入口
-│       ├── config.js       # 配置加载
-│       ├── routes/         # 路由：auth / chat / conversations / documents / settings
-│       ├── services/       # 业务逻辑：AI / 认证 / 加密 / 文档 / 嵌入
-│       │   └── tools/      # 工具注册表：web_search / fetch_url / doc_search / calculator
-│       └── db/             # SQLite 连接与迁移
-├── tests/                  # 单元测试（Vitest）
-├── css/                    # 样式
-├── docker-compose.yml      # 容器编排
-├── Dockerfile              # 前端镜像（Nginx）
-└── .github/workflows/ci.yml # CI 流水线
-```
-
-## 🔌 API 概览
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `POST` | `/api/auth/register` | 用户注册 |
-| `POST` | `/api/auth/login` | 用户登录 |
-| `POST` | `/api/auth/refresh` | 刷新 Token |
-| `POST` | `/api/chat/stream` | 流式对话（SSE） |
-| `GET` | `/api/conversations` | 获取对话列表 |
-| `POST` | `/api/conversations` | 创建对话 |
-| `GET` | `/api/conversations/:id/messages` | 获取对话消息 |
-| `DELETE` | `/api/conversations/:id` | 删除对话 |
-| `GET` / `PUT` | `/api/settings` | 获取 / 更新用户设置 |
-| `GET` | `/api/documents` | 获取知识库文档列表 |
-| `POST` | `/api/documents/upload` | 上传文档（multipart） |
-| `DELETE` | `/api/documents/:id` | 删除文档 |
-| `GET` | `/api/health` | 健康检查 |
-
-## 🧪 测试与质量门禁
-
-前端测试使用 Vitest，后端测试使用 Node.js 原生 `node:test` 与 Fastify `inject()`。后端集成测试会创建临时 SQLite 数据库，并对 AI、Embedding 和网页请求使用可控替身，不需要真实 API Key 或公网服务。
+无需数据库、Web 服务或 API Key：
 
 ```bash
-# 前端单元测试
-npm test
+npm run tt -- chat "解释一下 RAG" --no-session
+npm run tt -- tools list
+npm run tt -- session status
+```
 
-# 前端监听模式
-npm run test:watch
+默认输出 `Mock: ...`，用于验证使用流程。CLI 默认持久化到当前目录 `.threadthink/session.json`；`--no-session` 禁止读写会话，`--session` 可指定路径。包尚未发布，可在其他项目中用 `npm install /absolute/path/to/threadthink` 本地安装。
 
-# 后端单元/集成测试
-cd server && npm test && cd ..
+```js
+import { ThreadThink } from 'threadthink';
 
-# 前端生产构建
+const app = new ThreadThink();
+try {
+  const reply = await app.chat('你好');
+  console.log(reply.content, reply.termination.reason);
+} finally {
+  await app.dispose();
+}
+```
+
+- [Getting Started](docs/getting-started.md)：配置文件、profile、环境变量、CLI 与 SDK 入门。
+- [插件开发指南](docs/plugins.md)：工具 schema/render/presentationMeta、插件加载与释放、自定义 provider。
+- [API 参考](docs/api.md)：SDK 方法、回调、事件、终止原因、会话与测试辅助。
+- [examples/](examples/)：自定义工具、自定义 provider、RAG、批注四个离线示例。
+
+SDK 默认仅注册 calculator，知识库为内存存储；Web 宿主额外提供网络工具、用户鉴权和 SQLite 持久化。
+
+## HTTP API
+
+除注册、登录和健康检查外，接口均需要 `Authorization: Bearer <token>`。
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| POST | `/api/auth/register`、`/api/auth/login`、`/api/auth/refresh` | 认证 |
+| GET / POST | `/api/conversations` | 列表 / 创建 |
+| GET | `/api/conversations/:id/messages` | 当前主线消息 |
+| DELETE | `/api/conversations/:id` | 软删除 |
+| POST | `/api/chat/stream` | 主线 SSE，body 为 `{conversationId,message}` |
+| POST / GET | `/api/annotations` | 创建 / 按 `?conversationId=` 查询 |
+| PUT | `/api/annotations/:id` | 更新问题、状态或锚 |
+| POST | `/api/annotations/:id/reply` | 独立批注 SSE |
+| GET | `/api/conversations/:id/events` | `after`/`upTo` 事件查询 |
+| GET | `/api/conversations/:id/replay?upTo=seq` | 派生指定历史状态 |
+| POST | `/api/conversations/:id/fork` | `{seq,title?}` 创建分叉 |
+| POST | `/api/conversations/:id/rollback` | `{seq}` 逻辑回退，0 为起点 |
+| GET | `/api/conversations/:id/traces`、`/api/conversations/:id/traces/:traceId` | Trace 列表 / 详情 |
+| POST | `/api/conversations/:id/traces/:traceId/replay` | 录制数据驱动的离线重跑 |
+| POST | `/api/mcp` | MCP JSON-RPC：initialize、tools/list、tools/call、ping、取消 |
+| GET / PUT | `/api/settings` | 用户设置 |
+| GET / POST / DELETE | `/api/documents`、`/api/documents/upload`、`/api/documents/:id` | 知识库列表 / 上传 / 删除 |
+| GET | `/api/health` | 健康检查 |
+
+主线和批注共用 SSE：`token`、`tool_start`、`tool_end`，以及唯一的终止事件 `done` 或 `error`。`done` 包含服务端消息 ID、事件 seq、traceId、终止原因与用量。同一用户同一对话生成时，第二次生成、回退和删除返回 409。
+
+MCP 实现为无状态 HTTP JSON 响应，不提供 GET/SSE 会话订阅；通知返回 202。默认拒绝带浏览器 Origin 的 MCP 请求；宿主可以显式配置 allowedOrigins。MCP 工具使用与 Web 相同的用户作用域和输入/输出校验。
+
+## 测试、行为评测与构建
+
+```bash
+npm test                         # 前端 + SDK
+npm test --prefix server          # 后端单元与临时 SQLite 集成测试
+npm run test:types                # 公共类型声明
 npm run build
+npm run eval:mock -- --runs 3
+npm run eval:mock -- --negative-control  # 故意触发失败，预期退出码 1
 ```
 
-CI 会在构建 Docker 镜像前执行前后端测试；任一测试失败都会阻断流水线，不会吞掉失败结果。
+评测包含 8 个任务，检查完成率、工具及参数正确率、轮数/已报告用量、重复运行一致性，覆盖注入夹具、上下文干扰和真实鉴权路由越权探针。mock 通过不代表真实 provider 的安全性或回答质量；没有上报的 token 用量保留 `null`。
 
-当前测试重点覆盖：认证参数校验、会话资源归属隔离、Chat IDOR 回归、自然段级文档分块（Markdown 标题路径作为 embedding 上下文、超长段落句子二次切分）、工具输入安全校验、SSE 分块与 EOF 解析，以及流式聊天异常收尾。运行测试前请以 Node.js 22.x 或更高版本安装根目录和 `server/` 目录依赖。最近一次验证结果见 [QUALITY_REPORT.md](QUALITY_REPORT.md)，其中明确区分了已运行检查和未执行的 Docker 验证。
+CI 执行前后端测试、SDK 类型检查、mock 评测与构建，成功后构建 Docker 镜像。实际测试数量、浏览器交互与容器验证见 [QUALITY_REPORT.md](QUALITY_REPORT.md)。
 
-RAG 检索以自然段为单元：普通段落各自独立，不跨段落合并、不做固定重叠；只有超过 1000 字符的超长段落才按句子边界二次切分，且重叠只发生在同一段落的子块之间。Markdown 文件的 `#`–`######` 标题会形成章节路径，作为该章节下每个段落的 embedding 上下文（标题本身不生成检索块，代码围栏中的 `#` 不视为标题）。检索按用户隔离，返回与该用户文档最相似的 **Top-5 独立 chunk** 及章节路径等元数据；命中后的相邻段落补充尚未实现。
-
-> 已知边界：`fetch_url` 当前覆盖协议、字面量内网地址和重定向基础校验，尚未实现 DNS 解析后的 IP 校验、DNS rebinding 防护和完整响应体限制；Anthropic tool_use 已做响应形状适配，但仍应在目标服务商环境中进行端到端验证。
-
-## 🐳 Docker 部署
+## Docker
 
 ```bash
-# 先在 .env 或当前 shell 中设置 JWT_SECRET、ENCRYPTION_SECRET
-# 构建并启动全部服务（前端 :8080 + 后端 :3000）
+# 先在 .env 中配置 JWT_SECRET 与 ENCRYPTION_SECRET
 docker compose up -d --build
-
-# 查看日志
 docker compose logs -f
-
-# 停止服务
+# 停止时保留数据卷
 docker compose down
 ```
 
-- 前端由 Nginx 提供服务，并将 `/api/` 反向代理至后端容器
-- 数据通过 volume `threadthink-data` 持久化，容器重建不丢失
-- SSE 流式响应已配置 `proxy_buffering off`，确保实时输出
+前端 http://localhost:8080，由 Nginx 代理 `/api/` 到 backend；后端端口 3000。SSE 关闭代理缓冲，数据库持久化到 `threadthink-data`。前后端镜像均从仓库根目录构建：
 
-## 📄 许可证
+```bash
+docker build -t threadthink-frontend .
+docker build -f server/Dockerfile -t threadthink-backend .
+```
 
-本项目基于 [MIT 许可证](LICENSE) 发布。
+## 实现边界
 
----
+- 块 ID 采用内容指纹 + 同内容出现序号，未实现持久 UUID 或 CRDT。跨块选区使用引文与上下文回退；无法消歧时保留 outdated 批注。完全相同内容的历史身份不作额外保证。
+- 上下文预算是保守 UTF-8 字节估算，独立于 provider 实测 token。历史和来源可按节裁剪，自定义 section 可接摘要器。
+- 工具限制覆盖超时、取消、输入输出大小和并发；插件仍在宿主 Node 进程执行，必须是可信代码，不是隔离任意代码的 VM/OS 沙箱。
+- `fetch_url`/搜索使用 DNS 全地址校验和连接地址固定、拒绝重定向、限制响应体。真实公网和模型调用未纳入本轮验证。
+- RAG 按用户检索 Top-5 独立 chunk；自然段之间不重叠，超长段落内部按句子拆分。检索命中后的相邻段落扩展未实现。批注原文上下文会截取引用附近内容。
+- PDF 仅支持狭义、未压缩 ASCII literal-Tj 文本，不是通用 PDF 解析器，也不支持 OCR。
+- 不做插件市场、遥测、多人协作或横向部署扩展；完整说明见 [设计边界](design.md)。
 
-<div align="center">
+## 目录
 
-**ThreadThink** — 让 AI 对话像思维导图一样可追溯 · Made with ❤️
+```text
+core/             共享编排、provider、上下文、工具、SDK、类型与 testkit
+bin/tt.js         CLI
+src/              原生 JS 前端、批注装饰、历史与 Trace
+server/src/       Fastify、SQLite 事件与迁移、鉴权、知识库、MCP
+examples/         四个离线示例
+evals/            行为任务、mock runner 与 Trace replay runner
+tests/            前端和 SDK Vitest 测试
+server/tests/     后端 node:test 测试
+docs/             开发者文档
+```
 
-</div>
+本项目使用 [MIT 许可证](LICENSE)。

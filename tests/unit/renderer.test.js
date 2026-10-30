@@ -3,7 +3,8 @@
    ============================================================ */
 
 import { describe, it, expect } from 'vitest';
-import { renderAnnotatedContent, renderMessage, updateStreamingBody } from '../../src/renderer.js';
+import { renderAnnotatedContent, renderMessage, updateStreamingBody, smartIndexOf, locateByAnchor, highlightTextInDOM } from '../../src/renderer.js';
+import { getColor } from '../../src/palette.js';
 import { parseBlocks } from '../../src/blocks.js';
 import { hashText } from '../../src/annotations.js';
 import { stripMarkdown } from '../../src/text.js';
@@ -58,10 +59,12 @@ describe('renderAnnotatedContent', function () {
     expect(bodyText(frag)).toBe(content);
   });
 
-  it('重复文字且无上下文时回退到第一次出现', function () {
+  it('重复文字无唯一上下文时保留为outdated，不猜第一个', function () {
     var content = '首先强调一点：注意这一点。然后补充其他内容。最后再次强调：注意这一点。';
-    var frag = renderAnnotatedContent({ content: content, annotations: [makeAnn('a1', '注意这一点', '')] });
-    expect(markStart(frag, 'a1')).toBe(content.indexOf('注意这一点'));
+    var ann = makeAnn('a1', '注意这一点', '');
+    var frag = renderAnnotatedContent({ content: content, annotations: [ann] });
+    expect(markStart(frag, 'a1')).toBe(-1);
+    expect(ann.status).toBe('outdated');
   });
 
   it('选中文字跨加粗节点时高亮仍完整覆盖', function () {
@@ -70,7 +73,9 @@ describe('renderAnnotatedContent', function () {
     var frag = renderAnnotatedContent({ content: content, annotations: [ann] });
     var mark = frag.querySelector('.annotated-text');
     expect(mark).not.toBeNull();
-    expect(mark.textContent).toBe('文字加粗部分');
+    expect(Array.from(frag.querySelectorAll('.annotated-text')).map(function (el) { return el.textContent; }).join('')).toBe('文字加粗部分');
+    expect(frag.querySelector('strong').textContent.replace('●', '')).toBe('加粗部分');
+    expect(frag.querySelector('strong .annotated-text')).not.toBeNull();
     expect(bodyText(frag)).toBe('前置文字加粗部分后续文字。');
     expect(markStart(frag, 'a1')).toBe(2);
   });
@@ -106,7 +111,7 @@ describe('锚定恢复（design 4.2 解析链）', function () {
     var frag = renderAnnotatedContent({ content: CONTENT, annotations: [anchoredAnn()] });
     var mark = frag.querySelector('.annotated-text');
     expect(mark).not.toBeNull();
-    expect(mark.textContent).toBe(SEL);
+    expect(Array.from(frag.querySelectorAll('.annotated-text')).map(function (el) { return el.textContent; }).join('')).toBe(SEL);
     expect(markStart(frag, 'anchored')).toBe(13);
   });
 
@@ -114,7 +119,7 @@ describe('锚定恢复（design 4.2 解析链）', function () {
     var frag = renderAnnotatedContent({ content: CONTENT, annotations: [anchoredAnn({ textHash: 'stalehash' })] });
     var mark = frag.querySelector('.annotated-text');
     expect(mark).not.toBeNull();
-    expect(mark.textContent).toBe(SEL);
+    expect(Array.from(frag.querySelectorAll('.annotated-text')).map(function (el) { return el.textContent; }).join('')).toBe(SEL);
     expect(markStart(frag, 'anchored')).toBe(13);
   });
 
@@ -174,5 +179,94 @@ describe('updateStreamingBody（流式增量渲染）', function () {
     expect(body.children[0].querySelector('.annotated-text')).not.toBeNull(); // 高亮保留
     expect(body.children[0].querySelector('.annotated-text').dataset.annId).toBe('a1');
     expect(body.children.length).toBe(2);
+  });
+
+  it('中间块变化后仍复用后续未变块的DOM', function () {
+    var body = document.createElement('div'); body.innerHTML = renderMarkdown('first\n\nmiddle\n\nlast');
+    var first = body.firstChild, last = body.lastChild;
+    updateStreamingBody(body, 'first\n\nchanged\n\nlast');
+    expect(body.firstChild).toBe(first); expect(body.lastChild).toBe(last);
+  });
+
+  it('列表增长时仍复用已有条目与高亮', function () {
+    var body = document.createElement('div');
+    body.appendChild(renderAnnotatedContent({ content: '- first\n- second', annotations: [makeAnn('a', 'first')] }));
+    var list = body.firstChild, item = body.querySelector('li');
+    updateStreamingBody(body, '- first\n- second\n- third');
+    expect(body.firstChild).toBe(list); expect(body.querySelector('li')).toBe(item);
+    expect(item.querySelector('mark').textContent).toBe('first'); expect(body.querySelectorAll('li')).toHaveLength(3);
+  });
+
+  it('保持完整列表容器而不是根据顶层块数量反复重建', function () {
+    var body = document.createElement('div');
+    body.innerHTML = renderMarkdown('- first\n- second\n\nTail');
+    var list = body.firstChild;
+    updateStreamingBody(body, '- first\n- second\n\nTail grows');
+    expect(body.firstChild).toBe(list);
+    expect(body.querySelectorAll('li')).toHaveLength(2);
+    expect(body.lastChild.textContent).toBe('Tail grows');
+  });
+});
+
+describe('strict quote recovery and decoration invariants', function () {
+  it('empty quotes and ambiguous contexts terminate as misses', function () {
+    expect(smartIndexOf('abc', '', makeAnn('a', ''))).toBe(-1);
+    expect(smartIndexOf('left q right left q right', '', makeAnn('a', 'q', 'left q right'))).toBe(-1);
+    expect(smartIndexOf('x q q y', '', makeAnn('a', 'q', 'x q q y'))).toBe(-1);
+    expect(smartIndexOf('q q', '', makeAnn('a', 'q', 'missing q'))).toBe(-1);
+    var ann = makeAnn('empty', '');
+    expect(renderAnnotatedContent({ content: 'abc', annotations: [ann] }).querySelector('mark')).toBeNull();
+    expect(ann.status).toBe('outdated');
+  });
+
+  it('duplicate block IDs cannot silently reattach a deleted occurrence', function () {
+    var before = document.createElement('div'); before.innerHTML = renderMarkdown('A\n\nsame\n\nB\n\nsame\n\nC\n\nsame');
+    var block = before.children[1];
+    var ann = { ...makeAnn('a', 'same', 'AsameB'), blockId: block.dataset.blockId, startOffset: 0, endOffset: 4, textHash: hashText('same') };
+    expect(locateByAnchor(before, ann)).not.toBeNull();
+    var after = document.createElement('div'); after.innerHTML = renderMarkdown('B\n\nsame\n\nC\n\nsame');
+    expect(locateByAnchor(after, ann)).toBeNull();
+    expect(renderAnnotatedContent({ content: 'B\n\nsame\n\nC\n\nsame', annotations: [ann] }).querySelector('mark')).toBeNull();
+    expect(ann.status).toBe('outdated');
+  });
+
+  it('an anchor without a hash must still match selectedText exactly', function () {
+    var root = document.createElement('div'); root.innerHTML = renderMarkdown('wrong text');
+    var ann = { ...makeAnn('a', 'other'), blockId: root.firstChild.dataset.blockId, startOffset: 0, endOffset: 5 };
+    expect(locateByAnchor(root, ann)).toBeNull();
+    expect(locateByAnchor(root, { ...ann, selectedText: 'wrong' })).toEqual({ start: 0, end: 5 });
+  });
+
+  it('cross-block highlights retain links, emphasis, and paragraph boundaries', function () {
+    var ann = makeAnn('a', 'bold linkedafter');
+    var frag = document.createElement('div');
+    frag.innerHTML = '<p>before <strong>bold</strong> <a href="https://example.com">linked</a></p><p>after</p>';
+    highlightTextInDOM(frag, 7, frag.textContent.length, ann, getColor(0));
+    expect(frag.querySelectorAll('p')).toHaveLength(2);
+    expect(frag.querySelector('strong mark').textContent).toBe('bold');
+    expect(frag.querySelector('a mark').textContent).toBe('linked');
+    expect(frag.querySelector('a').getAttribute('href')).toBe('https://example.com');
+    expect(bodyText(frag)).toBe('before bold linkedafter');
+  });
+
+  it('overlapping highlights never count badges as source characters', function () {
+    var frag = renderAnnotatedContent({ content: 'abcdef', annotations: [makeAnn('a', 'bcd'), makeAnn('b', 'cde')] });
+    expect(bodyText(frag)).toBe('abcdef');
+    var marks = frag.querySelectorAll('[data-ann-id="b"].annotated-text');
+    expect(Array.from(marks).map(function (el) { return el.textContent; }).join('')).toBe('cde');
+  });
+
+  it('outdated and resolved threads remain reachable and history keeps metadata', function () {
+    var missing = { ...makeAnn('a', 'gone'), status: 'open' };
+    var resolved = { ...makeAnn('b', 'present'), status: 'resolved' };
+    var message = renderMessage({ id: 'm', role: 'assistant', content: 'present', annotations: [missing, resolved], seq: 42, traceId: 'trace' });
+    expect(message.querySelectorAll('.btn-open-annotation')).toHaveLength(2);
+    expect(message.textContent).toContain('内容已变更');
+    expect(message.textContent).toContain('已解决');
+    var detail;
+    document.addEventListener('threadthink:history', function (event) { detail = event.detail; }, { once: true });
+    message.querySelector('.btn-message-history').click();
+    expect(detail).toEqual({ messageId: 'm', seq: 42, traceId: 'trace' });
+    expect(resolved.status).toBe('resolved');
   });
 });

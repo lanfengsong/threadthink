@@ -1,6 +1,22 @@
 # ThreadThink 升级设计文档（Agent 化 + 批注锚定重构）
 
-> **状态说明**：本文档为设计蓝图，**尚未实现**。所有"当前实现"均指 2026-09 版本代码；"目标设计"为规划内容，实现后在 QUALITY_REPORT 中对应更新。
+> **状态说明（2026-10-30）**：本轮已实现第三章的 Agent、Trace/离线回放、评测、上下文分节、MCP 与事件回溯，第四章的独立批注回答、锚定降级与流式草稿队列，以及第八章 M1–M3 的 SDK/CLI/插件与开发者文档。下文保留设计原文，其中“现状/当前实现”描述升级前版本；已实现能力与具体边界以本节及 [QUALITY_REPORT.md](QUALITY_REPORT.md) 为准。
+
+### 本轮实现对照
+
+| 设计章节 | 当前交付 | 关键边界 |
+|---|---|---|
+| 3.2 Agent 编排 | Web/SDK/CLI 共用 runAgent；plan/act/observe/reflect/retry；次数限制、取消、终止原因 | plan 为显式编排步骤；工具选择由 provider 决策，不宣称记录模型隐藏推理 |
+| 3.3 Trace 与回放 | 请求上下文、provider 响应、工具参数/原始值/呈现值入事件；录制数据驱动同一编排器离线重跑 | 旧记录缺失 provider 响应时只展示记录；不冒充可重执行 |
+| 3.4 行为评测 | 四维指标、8 个任务、注入/干扰夹具和真实鉴权路由越权探针 | mock 结果证明流程与断言；不证明真实模型安全性，未报告 token 保持 null |
+| 3.5 上下文工程 | persona/history/rag/source/thread/quote/question 独立替换与预算；不可信资料 JSON 包装 | 默认预算用 UTF-8 字节保守估计，并非 provider tokenizer；摘要可由自定义 section 注入 |
+| 3.6 MCP 与安全 | 鉴权 JSON-RPC HTTP、工具输入/输出 schema、DNS 校验与连接 IP 固定、响应体/超时/并发限制 | MCP 为无状态 HTTP JSON 模式；工具限制为协作式，不隔离任意不可信 JS |
+| 3.7 事件与回溯 | 不可改写事件、幂等迁移、派生视图、历史查看、复制分叉、逻辑回退、软删除 | Web 用 SQLite；SDK 用内存事件，CLI 可持久化 JSON |
+| 4.2–4.4 批注锚定 | 块与偏移、SHA-1（兼容旧 FNV）、引文回退、歧义拒绝、outdated、增量装饰、旧 JSON 只读迁移 | 块 ID 为内容指纹 + 同内容出现序号，未采用持久 UUID；跨块选区走引文回退，不提供跨块精确锚 |
+| 4.5 批注回答 | 专用 SSE、kind 隔离、父子链、引用附近原回答、问题编辑/重答/状态持久化 | 流中批注先显示明确“未保存”草稿；主回答保存后顺序保存与回答，失败可见 |
+| 8 M1–M3 | ESM SDK、CLI、profile/env/patch、provider adapter、插件加载/dispose、类型声明、testkit、4 个示例、3 篇开发文档 | 本地可打包安装，未发布 npm；不做插件市场、遥测或多端生态 |
+
+运行入口见 [README.md](README.md)；开发者从 [Getting Started](docs/getting-started.md) 开始。真实 AI/Embedding provider 验证仍属于第六章明确排除的独立任务。
 
 ---
 

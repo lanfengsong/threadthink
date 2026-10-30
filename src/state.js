@@ -50,7 +50,16 @@ export function clearMessages()     { _state.messages = []; }
 export function getCards()          { return _state.cards; }
 export function setCard(id, data)   { _state.cards[id] = data; }
 export function deleteCard(id)      { delete _state.cards[id]; }
-export function clearAllCards()     { _state.cards = {}; }
+export function clearAllCards() {
+  Object.values(_state.cards).forEach(function (card) { if (card.el) card.el.remove(); });
+  document.querySelectorAll('.pinned-card').forEach(function (card) { card.remove(); });
+  _state.cards = {};
+}
+
+// null means live view; zero is a valid replay boundary.
+var _replaySeq = null;
+export function getReplaySeq() { return _replaySeq; }
+export function setReplaySeq(seq) { _replaySeq = seq == null ? null : seq; }
 
 // ---- Streaming guard ----
 

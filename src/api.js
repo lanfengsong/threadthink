@@ -92,15 +92,37 @@ export async function updateSettings(data) {
  * is not a transport rejection.
  */
 export function createChatStream(conversationId, message, callbacks) {
+  return createStream('/chat/stream', { conversationId: conversationId, message: message }, callbacks);
+}
+
+export function createAnnotationStream(annotationId, callbacks) {
+  return createStream('/annotations/' + encodeURIComponent(annotationId) + '/reply', {}, callbacks);
+}
+
+export async function updateAnnotation(id, data) {
+  var resp = await fetch(BASE + '/annotations/' + encodeURIComponent(id), {
+    method: 'PUT', headers: authHeaders(), body: JSON.stringify(data),
+  });
+  handleAuthError(resp);
+  if (!resp.ok) {
+    var error;
+    try { error = (await resp.json()).error; } catch (e) { /* use default */ }
+    throw new Error(error || '保存批注失败');
+  }
+  return (await resp.json()).annotation;
+}
+
+/** Shared terminal-aware SSE transport for chat and annotation replies. */
+export function createStream(path, payload, callbacks) {
   callbacks = callbacks || {};
   return (async function () {
     var token = getToken();
     if (!token) throw new Error('未登录');
 
-    var resp = await fetch(BASE + '/chat/stream', {
+    var resp = await fetch(BASE + path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-      body: JSON.stringify({ conversationId: conversationId, message: message }),
+      body: JSON.stringify(payload),
     });
     if (resp.status === 401) {
       logout();

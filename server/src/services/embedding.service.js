@@ -8,13 +8,13 @@
    ============================================================ */
 
 /** Get embedding vector for a single text. */
-export async function getEmbedding(text, apiKey, apiBase, model) {
-  var embeddings = await getEmbeddings([text], apiKey, apiBase, model);
+export async function getEmbedding(text, apiKey, apiBase, model, context) {
+  var embeddings = await getEmbeddings([text], apiKey, apiBase, model, context);
   return embeddings[0];
 }
 
 /** Get and validate vectors from an OpenAI-compatible embeddings endpoint. */
-export async function getEmbeddings(texts, apiKey, apiBase, model) {
+export async function getEmbeddings(texts, apiKey, apiBase, model, context) {
   if (!Array.isArray(texts)) throw new Error('Embedding 输入必须为文本数组');
   if (texts.length === 0) return [];
   for (var inputIndex = 0; inputIndex < texts.length; inputIndex++) {
@@ -43,18 +43,19 @@ export async function getEmbeddings(texts, apiKey, apiBase, model) {
     'Authorization': 'Bearer ' + apiKey,
   };
 
+  var timeoutSignal = AbortSignal.timeout(10000);
+  var signal = context && context.signal ? AbortSignal.any([context.signal, timeoutSignal]) : timeoutSignal;
   try {
+    signal.throwIfAborted();
     var resp = await fetch(embedBase, {
       method: 'POST',
       headers: headers,
+      signal: signal,
       body: JSON.stringify({ model: embedModel, input: truncated, encoding_format: 'float' }),
     });
-    if (!resp.ok) {
-      var errorText = await resp.text();
-      throw new Error('Embedding API ' + resp.status + ': ' + errorText.slice(0, 200));
-    }
-
-    var data = await resp.json();
+    var responseText = await readEmbeddingBody(resp, signal);
+    if (!resp.ok) throw new Error('Embedding API ' + resp.status + ': ' + responseText.slice(0, 200));
+    var data = JSON.parse(responseText);
     if (!data || !Array.isArray(data.data) || data.data.length !== texts.length) {
       throw new Error('Embedding 返回数量异常');
     }
@@ -87,6 +88,29 @@ export async function getEmbeddings(texts, apiKey, apiBase, model) {
   } catch (e) {
     if (e && e.message && e.message.indexOf('Embedding') !== -1) throw e;
     throw new Error('Embedding 请求失败: ' + (e && e.message ? e.message : String(e)));
+  }
+}
+
+async function readEmbeddingBody(response, signal) {
+  if (!response.body) return '';
+  var reader = response.body.getReader(), chunks = [], bytes = 0;
+  function abort() { reader.cancel().catch(function () {}); }
+  signal.addEventListener('abort', abort, { once: true });
+  try {
+    while (true) {
+      signal.throwIfAborted();
+      var part = await reader.read();
+      signal.throwIfAborted();
+      if (part.done) break;
+      bytes += part.value.byteLength;
+      if (bytes > 2 * 1024 * 1024) throw new Error('Embedding 响应超过 2MB');
+      chunks.push(Buffer.from(part.value));
+    }
+    return Buffer.concat(chunks).toString('utf8');
+  } finally {
+    signal.removeEventListener('abort', abort);
+    try { await reader.cancel(); } catch (error) { /* already closed */ }
+    reader.releaseLock();
   }
 }
 

@@ -10,12 +10,25 @@ import { openSettings, closeSettings, saveSettings, resetSettings, autoResize } 
 import { clickAnnotation } from './cards.js';
 import { renderConversation } from './renderer.js';
 import { isLoggedIn, login, register, logout, getUser } from './auth.js';
-import { setAuth, clearAuth, clearMessages, clearAllCards, setConversations, setCurrentConversation, addConversation, getCards } from './state.js';
+import { setAuth, clearAuth, clearMessages, clearAllCards, setConversations, setCurrentConversation, addConversation, getCards, isStreaming, getCurrentConversationId } from './state.js';
+import { initHistory, clearHistoryView, resetConversation } from './history.js';
 import { deleteConversation, createConversation as apiCreateConversation } from './api.js';
 import { fetchDocuments, uploadFile, deleteDocument, renderDocumentList } from './documents.js';
 
 export function init() {
   var dom = getDom();
+  initHistory();
+  var sidebarToggle = document.getElementById('btnToggleSidebar');
+  if (sidebarToggle) sidebarToggle.onclick = function () {
+    var sidebar = document.getElementById('convSidebar');
+    var open = sidebar.classList.toggle('is-open');
+    sidebarToggle.setAttribute('aria-expanded', String(open));
+  };
+
+  document.addEventListener('threadthink:conversation-changed', function () {
+    document.getElementById('convSidebar')?.classList.remove('is-open');
+    sidebarToggle?.setAttribute('aria-expanded', 'false');
+  });
 
   // ---- Auth check ----
   if (isLoggedIn()) {
@@ -160,9 +173,15 @@ function showApp(dom) {
       var delBtn = e.target.closest('.conv-delete');
       if (delBtn) {
         e.stopPropagation();
+        if (isStreaming()) { showToast('请等待当前回答完成', true); return; }
         var cid = delBtn.dataset.convId;
         if (confirm('删除这个对话？')) {
-          deleteConversation(cid).then(function () { refreshConversationList(); });
+          deleteConversation(cid).then(function () {
+            if (cid === getCurrentConversationId()) {
+              clearHistoryView(); clearAllCards(); clearMessages(); setCurrentConversation(null); renderConversation();
+            }
+            return refreshConversationList();
+          }).catch(function (error) { showToast(error.message, true); });
         }
         return;
       }
@@ -176,8 +195,10 @@ function showApp(dom) {
   var btnNewConv = document.getElementById('btnNewConv');
   if (btnNewConv) {
     btnNewConv.addEventListener('click', async function () {
+      if (isStreaming()) { showToast('请等待当前回答完成', true); return; }
       try {
         var conv = await apiCreateConversation();
+        clearHistoryView(); clearAllCards();
         setCurrentConversation(conv.id);
         addConversation(conv);
         clearMessages();
@@ -193,6 +214,7 @@ function showApp(dom) {
   var btnLogout = document.getElementById('btnLogout');
   if (btnLogout) {
     btnLogout.addEventListener('click', function () {
+      if (isStreaming()) { showToast('请等待当前回答完成', true); return; }
       logout();
       clearAuth();
       clearMessages();
@@ -278,21 +300,13 @@ function setupDocumentEvents() {
   }
 }
 
-function clearConversation() {
-  if (!confirm('清空所有对话和批注？')) return;
-  var cards = getCards();
-  for (var k in cards) { if (cards[k].el) cards[k].el.remove(); }
-  clearMessages();
-  clearAllCards();
-  var dom = getDom();
-  dom.sidebarLeftInner.innerHTML = '';
-  dom.sidebarRightInner.innerHTML = '';
-  var hintL = dom.sidebarLeft.querySelector('.sidebar-hint');
-  var hintR = dom.sidebarRight.querySelector('.sidebar-hint');
-  if (hintL) hintL.style.display = '';
-  if (hintR) hintR.style.display = '';
-  renderConversation();
-  showToast('已清空');
+async function clearConversation() {
+  if (isStreaming()) { showToast('请等待当前回答完成', true); return; }
+  if (!confirm('清空当前对话与批注？仍可在历史记录中查看。')) return;
+  try {
+    await resetConversation();
+    showToast('已清空当前对话，历史记录保留');
+  } catch (error) { showToast(error.message, true); }
 }
 
 async function loadDocuments() {

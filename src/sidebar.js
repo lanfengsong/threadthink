@@ -9,7 +9,7 @@ import { getColor } from './palette.js';
 import { escapeHTML } from './utils.js';
 import { renderMarkdown } from './markdown.js';
 import { findAnnotationById } from './annotations.js';
-import { unpinCard, editAnnQuestion } from './cards.js';
+import { unpinCard, editAnnQuestion, appendAnnotationControls } from './cards.js';
 
 /** Sync sidebar-inner heights to match conversation content height */
 export function syncSidebarHeights() {
@@ -58,11 +58,13 @@ export function createPinnedCardEl(annId) {
     '</div>' +
     '<div class="pinned-body">' +
       '<div style="color:#999;font-size:11px;margin-bottom:4px">📌 ' + escapeHTML(ann.selectedText.slice(0, 60)) + (ann.selectedText.length > 60 ? '...' : '') + '</div>' +
-      '<div data-ann-content="' + annId + '">' + (ann.answer ? renderMarkdown(ann.answer) : (ann._loading ? '<em>…</em>' : '')) + '</div>' +
+      '<div class="pinned-answer">' + (ann.answer ? renderMarkdown(ann.answer) : (ann._loading ? '<em>…</em>' : '')) + '</div>' +
     '</div>';
 
+  el.querySelector('.pinned-answer').dataset.annContent = annId;
   el.querySelector('.btn-unpin').onclick = function (e) { e.stopPropagation(); unpinCard(annId); };
   el.querySelector('.pinned-title').onclick = function (e) { e.stopPropagation(); editAnnQuestion(ann, el.querySelector('.pinned-title'), 'pinned'); };
+  appendAnnotationControls(el, ann);
   return el;
 }
 

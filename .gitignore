@@ -6,8 +6,9 @@ node_modules/
 .env.local
 .env.*.local
 
-# Database
+# Database and local CLI sessions
 data/
+.threadthink/
 
 # IDE
 .vscode/

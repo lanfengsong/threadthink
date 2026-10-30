@@ -14,6 +14,7 @@ import { conversationsRoutes } from './routes/conversations.routes.js';
 import { settingsRoutes } from './routes/settings.routes.js';
 import { documentsRoutes } from './routes/documents.routes.js';
 import { annotationRoutes } from './routes/annotations.routes.js';
+import mcpRoutes from './routes/mcp.routes.js';
 
 export async function buildApp(options) {
   var opts = options || {};
@@ -61,6 +62,12 @@ export async function buildApp(options) {
   fastify.register(settingsRoutes, { requireAuth });
   fastify.register(documentsRoutes, { requireAuth });
   fastify.register(annotationRoutes, { requireAuth });
+  fastify.register(mcpRoutes, {
+    prefix: '/api/mcp',
+    authenticate: async function (request, reply) {
+      if (!request.user) return reply.code(401).send({ error: '未登录' });
+    },
+  });
 
   getDb();
   await fastify.ready();

@@ -1,0 +1,29 @@
+.annotation-controls, .message-annotations {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 0;
+}
+.annotation-controls button, .message-annotations button, .btn-message-history {
+  font: inherit;
+  font-size: 12px;
+  color: inherit;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 5px;
+  padding: 4px 7px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.annotation-controls button:disabled { opacity: .5; cursor: default; }
+.annotation-status { width: 100%; font-size: 12px; font-weight: 600; }
+.annotation-error { color: #a62d2d; padding: 8px 0; white-space: pre-wrap; }
+.annotation-selection-hint { font-size: 12px; }
+.ann-card { background: var(--surface); max-height: min(600px, calc(100dvh - 80px)); }
+.ann-card-body { min-height: 60px; }
+.ann-card .annotation-controls, .ann-card .annotation-error { flex-shrink: 0; }
+.ann-card .annotation-tools { overflow: auto; max-height: 140px; flex-shrink: 0; }
+.annotation-tools pre, .message-tools pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.btn-message-history { margin-left: 12px; }
+.ann-card .annotation-controls, .ann-card .annotation-tools, .ann-card .annotation-error,
+.pinned-card .annotation-controls, .pinned-card .annotation-tools, .pinned-card .annotation-error { margin: 0 12px; }
